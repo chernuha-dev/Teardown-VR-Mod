@@ -243,3 +243,35 @@ Hook подменяет только writable основную камеру на
 не является определением gameplay state. Проверено на desktop-вилле:
 перенос 2 м / yaw 20°, 600 applied / 600 restored, 0 rejected, возврат исходного
 вида после исчерпания бюджета. CTest 14/14, Python 9/9; в шлем не отправлялось.
+
+## Сохранение результатов GPU-проходов
+
+`tdvr_eye_copy::record_eye_copy` записывает копию всей 2D texture в другой
+ресурс на уже открытом DIRECT command list. До записи проверяет COM identity,
+общий device списка/обоих ресурсов, одинаковые extent/format, один mip/layer/
+sample и допустимые declared states. Поддержаны только RGBA/BGRA8 UNORM/SRGB
+с точным совпадением format: нет scaling или gamma conversion. Source переводится
+в COPY_SOURCE, destination — в COPY_DEST, затем оба возвращаются в указанные
+исходные состояния. Владелец обязан знать настоящие состояния и исключить
+overlapping placed allocations: helper не ведёт global resource-state tracker.
+
+Helper не выполняет ExecuteCommandLists, не ждёт fence и не передаёт владение
+OpenXR. Вызывающий код удерживает ресурсы и ждёт завершения на фактической
+queue до повторного использования или XR release. Эти обязанности ещё не
+подключены к игровому engine hook.
+
+Standalone D3D12 probe теперь отрисовывает red/green последовательно в одном
+источнике, копирует каждый результат в отдельную committed texture, затем
+перезаписывает источник blue. Только после этого записывает readback всех
+трёх ресурсов, submit/fence и проверяет каждый пиксель с row-pitch padding.
+Проверяются отказы для alias, null list, неверного state, extent и format.
+Hardware run дополнительно проверяет отказ копии AMD → WARP. Повторное
+D3D12CreateDevice для одного adapter не считается другим device — это
+[per-adapter singleton](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-d3d12createdevice).
+WARP-only run честно выводит cross-device rejection=0 (этот случай пропущен).
+Это проверка сохранения synthetic images, не синхронности игрового стерео.
+
+Проверено: CTest 14/14, Python 9/9 и
+`build/native/Release/tdvr_d3d12_tests.exe --hardware` на RX 6900 XT:
+221 pixels per eye, row pitch 256, cross-device rejection=1. Ни один из этих
+запусков не создаёт OpenXR session и не управляет игровым окном.

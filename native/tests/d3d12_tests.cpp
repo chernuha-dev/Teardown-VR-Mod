@@ -49,6 +49,7 @@ int main(int argc, char** argv) {
     require(report.success, "D3D12 probe failed: " + report.error);
     require(report.selected_adapter.is_software == options.use_warp, "Wrong adapter kind selected");
     require(report.selected_adapter.supports_d3d12, "Selected adapter lacks D3D12 support");
+    require(options.use_warp || report.verified_cross_device_rejection, "hardware/WARP cross-device rejection not tested");
     require(report.selected_adapter.max_feature_level >= options.minimum_feature_level,
             "Selected adapter lacks the requested feature level");
     require(report.verified_pixels_per_eye == 17 * 13, "Both complete eye textures were not checked");
@@ -79,6 +80,8 @@ int main(int argc, char** argv) {
     std::cout << "D3D12 " << (options.use_warp ? "WARP" : "hardware") << ": "
               << report.selected_adapter.description << "; " << report.verified_pixels_per_eye
               << " pixels per eye verified, row pitch " << report.readback_row_pitch
+              << "; independent GPU copies and source reuse verified; cross-device rejection="
+              << report.verified_cross_device_rejection
               << ". No OpenXR session, game rendering, stereo timing or headset comfort tested.\n";
     return 0;
 }

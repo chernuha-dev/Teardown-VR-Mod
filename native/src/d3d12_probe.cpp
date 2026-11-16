@@ -1,4 +1,5 @@
 #include "tdvr_d3d12_probe.h"
+#include "tdvr_eye_copy.h"
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -97,7 +98,8 @@ struct GpuWork {
     ComPtr<ID3D12GraphicsCommandList> commands;
     ComPtr<ID3D12DescriptorHeap> descriptors;
     std::array<ComPtr<ID3D12Resource>, eye_count> eyes;
-    std::array<ComPtr<ID3D12Resource>, eye_count> readbacks;
+    ComPtr<ID3D12Resource> render_source;
+    std::array<ComPtr<ID3D12Resource>, eye_count+1> readbacks;
     ComPtr<ID3D12Fence> fence;
     HANDLE event = nullptr;
     bool submitted = false;
@@ -138,7 +140,7 @@ void run_gpu_work(IDXGIAdapter1* adapter, const D3d12ProbeOptions& options,
 
     D3D12_DESCRIPTOR_HEAP_DESC descriptor_description{};
     descriptor_description.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-    descriptor_description.NumDescriptors = eye_count;
+    descriptor_description.NumDescriptors = 1;
     check(gpu.device->CreateDescriptorHeap(&descriptor_description, IID_PPV_ARGS(&gpu.descriptors)),
           "CreateDescriptorHeap(RTV)");
 
@@ -178,7 +180,9 @@ void run_gpu_work(IDXGIAdapter1* adapter, const D3d12ProbeOptions& options,
     constexpr std::array<std::array<float, 4>, eye_count> colors{{
         {{1.0f, 0.0f, 0.0f, 1.0f}}, {{0.0f, 1.0f, 0.0f, 1.0f}}}};
     auto rtv = gpu.descriptors->GetCPUDescriptorHandleForHeapStart();
-    const UINT descriptor_stride = gpu.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    check(gpu.device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture,
+        D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&gpu.render_source)), "create shared render source");
+    gpu.device->CreateRenderTargetView(gpu.render_source.Get(), nullptr, rtv);
     for (UINT eye = 0; eye < eye_count; ++eye) {
         D3D12_CLEAR_VALUE clear{};
         clear.Format = texture.Format;
@@ -186,28 +190,74 @@ void run_gpu_work(IDXGIAdapter1* adapter, const D3d12ProbeOptions& options,
         check(gpu.device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture,
               D3D12_RESOURCE_STATE_RENDER_TARGET, &clear, IID_PPV_ARGS(&gpu.eyes[eye])),
               "CreateCommittedResource(eye render target)");
-        check(gpu.device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &buffer,
-              D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&gpu.readbacks[eye])),
-              "CreateCommittedResource(readback buffer)");
-        gpu.device->CreateRenderTargetView(gpu.eyes[eye].Get(), nullptr, rtv);
         gpu.commands->ClearRenderTargetView(rtv, colors[eye].data(), 0, nullptr);
-
+        if (record_eye_copy(gpu.commands.Get(), gpu.render_source.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                gpu.render_source.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET) != E_INVALIDARG
+            || record_eye_copy(gpu.commands.Get(), gpu.render_source.Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                gpu.eyes[eye].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET) != E_INVALIDARG
+            || record_eye_copy(nullptr, gpu.render_source.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                gpu.eyes[eye].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET) != E_INVALIDARG)
+            throw std::runtime_error("invalid eye copy arguments accepted");
+        if (!eye) {
+            for (int mismatch = 0; mismatch < 2; ++mismatch) {
+                auto incompatible = texture;
+                if (!mismatch) ++incompatible.Width;
+                else incompatible.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+                ComPtr<ID3D12Resource> rejected;
+                check(gpu.device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &incompatible,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&rejected)), "create mismatched copy target");
+                if (record_eye_copy(gpu.commands.Get(), gpu.render_source.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        rejected.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET) != E_INVALIDARG)
+                    throw std::runtime_error("mismatched copy extent/format accepted");
+            }
+            ComPtr<ID3D12Device> other_device;
+            ComPtr<ID3D12Resource> foreign;
+            ComPtr<IDXGIFactory4> factory;
+            ComPtr<IDXGIAdapter> warp;
+            check(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)), "foreign device factory");
+            check(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp)), "foreign WARP adapter");
+            check(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&other_device)), "create WARP copy device");
+            ComPtr<IUnknown> own_identity, other_identity;
+            check(gpu.device.As(&own_identity), "own device identity");
+            check(other_device.As(&other_identity), "other device identity");
+            // D3D12CreateDevice is a singleton per adapter. WARP vs WARP is
+            // deliberately not advertised as a cross-device test.
+            if (own_identity.Get() != other_identity.Get()) {
+                check(other_device->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&foreign)), "create foreign copy target");
+                if (record_eye_copy(gpu.commands.Get(), gpu.render_source.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        foreign.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET) != E_INVALIDARG)
+                    throw std::runtime_error("cross-device texture copy accepted");
+                report.verified_cross_device_rejection = true;
+            }
+        }
+        check(record_eye_copy(gpu.commands.Get(), gpu.render_source.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+            gpu.eyes[eye].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET), "record independent eye copy");
+    }
+    // Reuse the source AFTER both copies, BEFORE any readback. If the two saved
+    // images alias the source or each other, red/green pixel verification fails.
+    const float blue[]{0,0,1,1};
+    gpu.commands->ClearRenderTargetView(rtv, blue, 0, nullptr);
+    for (UINT image = 0; image < eye_count+1; ++image) {
+        auto* saved = image < eye_count ? gpu.eyes[image].Get() : gpu.render_source.Get();
+        check(gpu.device->CreateCommittedResource(&readback_heap, D3D12_HEAP_FLAG_NONE, &buffer,
+              D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&gpu.readbacks[image])),
+              "CreateCommittedResource(readback buffer)");
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.pResource = gpu.eyes[eye].Get();
+        barrier.Transition.pResource = saved;
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         gpu.commands->ResourceBarrier(1, &barrier);
         D3D12_TEXTURE_COPY_LOCATION source{};
-        source.pResource = gpu.eyes[eye].Get();
+        source.pResource = saved;
         source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         D3D12_TEXTURE_COPY_LOCATION destination{};
-        destination.pResource = gpu.readbacks[eye].Get();
+        destination.pResource = gpu.readbacks[image].Get();
         destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
         destination.PlacedFootprint = footprint;
         gpu.commands->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
-        rtv.ptr += descriptor_stride;
     }
     check(gpu.commands->Close(), "Close command list");
     check(gpu.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&gpu.fence)), "CreateFence");
@@ -233,9 +283,9 @@ void run_gpu_work(IDXGIAdapter1* adapter, const D3d12ProbeOptions& options,
     }
     gpu.completed = true;
 
-    constexpr std::array<std::array<std::uint8_t, 4>, eye_count> expected{{
-        {{255, 0, 0, 255}}, {{0, 255, 0, 255}}}};
-    for (UINT eye = 0; eye < eye_count; ++eye) {
+    constexpr std::array<std::array<std::uint8_t, 4>, eye_count+1> expected{{
+        {{255, 0, 0, 255}}, {{0, 255, 0, 255}}, {{0, 0, 255, 255}}}};
+    for (UINT eye = 0; eye < eye_count+1; ++eye) {
         void* mapped = nullptr;
         const D3D12_RANGE read_range{0, static_cast<SIZE_T>(total_bytes)};
         check(gpu.readbacks[eye]->Map(0, &read_range, &mapped), "Map readback");

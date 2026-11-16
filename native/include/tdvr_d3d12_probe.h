@@ -38,6 +38,7 @@ struct D3d12ProbeReport {
     D3d12AdapterInfo selected_adapter;
     std::uint32_t verified_pixels_per_eye = 0;
     std::uint32_t readback_row_pitch = 0;
+    bool verified_cross_device_rejection = false;
 };
 
 // Standalone diagnostic process only: no window, OpenXR session, game or Present.

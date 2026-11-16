@@ -110,6 +110,17 @@ descriptor copy invalidation, повторные записи, resize и неи�
 проверки этого среза выполняются без UI и шлема. Итог после исправления
 группировки: CTest 14/14, Python 9/9; готового VR-рендера ещё нет.
 
+DEV-004/VR-102: реализован reusable GPU eye-copy recorder с предварительной
+проверкой COM device/format/extent и восстановлением resource states. Standalone
+probe сохраняет red/green из последовательно переиспользуемого render source
+в две committed textures, перезаписывает source blue и читает все три только
+после submit/fence. Это строительный блок сохранения результатов проходов,
+не два игровых глаза: реальные game resource states/queue ownership,
+eye histories и XR release ещё не связаны с helper. Проверено: CTest 14/14,
+Python 9/9 и отдельный hardware run на RX 6900 XT (221 pixels per eye,
+row pitch 256, cross-device rejection=1). Runtime и UI не запускались.
+Подробности — BUILD.md.
+
 Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
 D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;
 статические OpenGL imports не доказывают активный OpenGL. Следующий практический
