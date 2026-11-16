@@ -45,6 +45,7 @@ struct State {
     std::recursive_mutex mutex;
     TdvrCaptureStats stats{sizeof(TdvrCaptureStats), 1};
     bool started = false;
+    bool profile_only = false;
     std::wstring profile;
     FolderPath folder_path = nullptr;
     Factory factory = nullptr, factory1 = nullptr;
@@ -300,6 +301,7 @@ HRESULT WINAPI factory2(UINT flags, REFIID iid, void** out) {
 HRESULT WINAPI TdvrStartCapture() {
     auto& s = state();
     std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    if (s.profile_only) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
     if (s.started) return S_FALSE;
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
@@ -345,11 +347,30 @@ HRESULT WINAPI TdvrStartCapture() {
     s.started = true;
     return S_OK;
 }
+HRESULT WINAPI TdvrStartDevelopmentProfile() {
+    auto& s = state();
+    std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    if (s.profile_only) return S_FALSE;
+    if (s.started || s.profile.empty()) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+        reinterpret_cast<LPCWSTR>(&TdvrStartDevelopmentProfile), &module)) return HRESULT_FROM_WIN32(GetLastError());
+    wchar_t directory[MAX_PATH]{};
+    if (!GetSystemDirectoryW(directory, MAX_PATH)) return HRESULT_FROM_WIN32(GetLastError());
+    const auto shell_path = std::wstring(directory) + L"\\shell32.dll";
+    const auto shell = LoadLibraryExW(shell_path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    const auto target = shell ? reinterpret_cast<void*>(GetProcAddress(shell, "SHGetSpecialFolderPathA")) : nullptr;
+    if (!target || MH_Initialize() != MH_OK) return E_FAIL;
+    if (MH_CreateHook(target, reinterpret_cast<void*>(folder_path), reinterpret_cast<void**>(&s.folder_path)) != MH_OK
+        || MH_EnableHook(target) != MH_OK) { MH_Uninitialize(); return E_FAIL; }
+    s.profile_only = true;
+    return S_OK;
+}
 HRESULT WINAPI TdvrConfigureDevelopmentProfile(const wchar_t* root) {
     if (!root || !*root) return E_INVALIDARG;
     auto& s = state();
     std::lock_guard<std::recursive_mutex> lock(s.mutex);
-    if (s.started) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.started || s.profile_only) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
     try {
         const std::wstring profile(root);
         if (profile.size() > MAX_PATH - 40 || profile.size() < 4 || profile[1] != L':'

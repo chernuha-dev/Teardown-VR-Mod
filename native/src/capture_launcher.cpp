@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <utility>
 
 namespace {
 struct Handle {
@@ -82,10 +84,12 @@ int wmain(int argc, wchar_t** argv) {
         std::cout << std::unitbuf;
         // This launcher never attaches to an existing process or the user's VR app.
         const bool trace = argc >= 4 && std::wstring(argv[argc-1]) == L"--trace";
-        const int positional = argc - (trace ? 1 : 0);
+        const bool profile_only = argc >= 4 && std::wstring(argv[argc-1]) == L"--profile-only";
+        const int positional = argc - ((trace || profile_only) ? 1 : 0);
+        if (profile_only && positional != 4) throw std::runtime_error("--profile-only requires a development profile");
         if (positional != 3 && positional != 4) {
-            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile] [--trace]\n"
-                << "Capture-only child process. No OpenXR/VR output. No game deployment.\n";
+            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile] [--trace|--profile-only]\n"
+                << "Own capture has no XR output. Profile-only leaves rendering to the child and its installed modules.\n";
             return argc == 1 ? 0 : 2;
         }
         const auto exe = std::filesystem::canonical(argv[1]);
@@ -100,12 +104,14 @@ int wmain(int argc, wchar_t** argv) {
         const auto start = GetProcAddress(local, "TdvrStartCapture");
         const auto getstats = GetProcAddress(local, "TdvrGetCaptureStats");
         const auto configure = GetProcAddress(local, "TdvrConfigureDevelopmentProfile");
+        const auto start_profile = GetProcAddress(local, "TdvrStartDevelopmentProfile");
         const auto enable_trace = GetProcAddress(local, "TdvrEnableRenderTrace");
         const auto get_trace = GetProcAddress(local, "TdvrGetRenderTrace");
-        if (!start || !getstats || !configure || !enable_trace || !get_trace) { FreeLibrary(local); throw std::runtime_error("capture exports missing"); }
+        if (!start || !getstats || !configure || !start_profile || !enable_trace || !get_trace) { FreeLibrary(local); throw std::runtime_error("capture exports missing"); }
         const auto start_rva = reinterpret_cast<uintptr_t>(start) - reinterpret_cast<uintptr_t>(local);
         const auto stats_rva = reinterpret_cast<uintptr_t>(getstats) - reinterpret_cast<uintptr_t>(local);
         const auto configure_rva = reinterpret_cast<uintptr_t>(configure) - reinterpret_cast<uintptr_t>(local);
+        const auto profile_rva = reinterpret_cast<uintptr_t>(start_profile) - reinterpret_cast<uintptr_t>(local);
         const auto enable_trace_rva = reinterpret_cast<uintptr_t>(enable_trace) - reinterpret_cast<uintptr_t>(local);
         const auto get_trace_rva = reinterpret_cast<uintptr_t>(get_trace) - reinterpret_cast<uintptr_t>(local);
         FreeLibrary(local);
@@ -113,8 +119,46 @@ int wmain(int argc, wchar_t** argv) {
         STARTUPINFOW startup{}; startup.cb = sizeof(startup);
         std::wstring command = L"\"" + exe.wstring() + L"\"";
         std::vector<wchar_t> mutable_command(command.begin(), command.end()); mutable_command.push_back(0);
+        std::vector<wchar_t> environment;
+        if (positional == 4) {
+            // Supply isolation at process creation too: the CRT can cache its
+            // environment during loader bootstrap, before our configure RPC.
+            const auto profile = std::filesystem::absolute(argv[3]).lexically_normal();
+            if (profile == profile.root_path() || profile.wstring().size() > MAX_PATH - 40)
+                throw std::runtime_error("development profile must be a non-root short absolute path");
+            const auto inherited = GetEnvironmentStringsW();
+            wincheck(inherited != nullptr, "read environment");
+            for (const wchar_t* entry = inherited; *entry; entry += wcslen(entry) + 1) {
+                bool replace = false;
+                for (const auto* key : {L"LOCALAPPDATA=", L"APPDATA=", L"USERPROFILE=", L"TDVR_DEV_PROFILE="})
+                    if (_wcsnicmp(entry, key, wcslen(key)) == 0) replace = true;
+                if (!replace) environment.insert(environment.end(), entry, entry + wcslen(entry) + 1);
+            }
+            FreeEnvironmentStringsW(inherited);
+            for (const auto& pair : {std::pair{L"LOCALAPPDATA=", profile / L"AppData/Local"},
+                 std::pair{L"APPDATA=", profile / L"AppData/Roaming"},
+                 std::pair{L"USERPROFILE=", profile}, std::pair{L"TDVR_DEV_PROFILE=", profile}}) {
+                std::filesystem::create_directories(pair.second);
+                const auto text = std::wstring(pair.first) + pair.second.wstring();
+                environment.insert(environment.end(), text.begin(), text.end());
+                environment.push_back(0);
+            }
+            std::vector<std::wstring> sorted;
+            for (size_t offset = 0; offset < environment.size();) {
+                sorted.emplace_back(environment.data() + offset);
+                offset += sorted.back().size() + 1;
+            }
+            std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return _wcsicmp(a.c_str(), b.c_str()) < 0; });
+            environment.clear();
+            for (const auto& entry : sorted) {
+                environment.insert(environment.end(), entry.begin(), entry.end());
+                environment.push_back(0);
+            }
+            environment.push_back(0);
+        }
         wincheck(CreateProcessW(exe.c_str(), mutable_command.data(), nullptr, nullptr, FALSE,
-            CREATE_SUSPENDED, nullptr, exe.parent_path().c_str(), &startup, &child.info) != FALSE, "CreateProcessW");
+            CREATE_SUSPENDED | (environment.empty() ? 0 : CREATE_UNICODE_ENVIRONMENT),
+            environment.empty() ? nullptr : environment.data(), exe.parent_path().c_str(), &startup, &child.info) != FALSE, "CreateProcessW");
         BOOL wow64 = FALSE;
         wincheck(IsWow64Process(child.info.hProcess, &wow64) != FALSE, "child architecture");
         if (wow64) throw std::runtime_error("only x64 development children are supported");
@@ -166,9 +210,19 @@ int wmain(int argc, wchar_t** argv) {
         if (trace && FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess,
             remote_dll + enable_trace_rva, nullptr, "enable render trace"))))
             throw std::runtime_error("render trace configuration failed");
-        std::cout << "Initializing capture hooks before primary main\n";
-        const DWORD init = remote_call(child.info.hProcess, remote_dll + start_rva, nullptr, "capture startup");
-        if (FAILED(static_cast<HRESULT>(init))) throw std::runtime_error("capture initialization failed");
+        std::cout << (profile_only ? "Starting folder redirection only; no own graphics hooks\n" : "Initializing capture hooks before primary main\n");
+        const DWORD init = remote_call(child.info.hProcess, remote_dll + (profile_only ? profile_rva : start_rva), nullptr, "startup");
+        if (FAILED(static_cast<HRESULT>(init))) throw std::runtime_error("initialization failed HRESULT=" + std::to_string(init));
+        if (profile_only) {
+            wincheck(ResumeThread(child.info.hThread) != static_cast<DWORD>(-1), "ResumeThread");
+            std::cout << "Profile-only child pid=" << child.info.dwProcessId << "; rendering belongs to child modules\n";
+            wincheck(WaitForSingleObject(child.info.hProcess, INFINITE) == WAIT_OBJECT_0, "wait profile child");
+            child.exited = true;
+            DWORD code = 0;
+            wincheck(GetExitCodeProcess(child.info.hProcess, &code) != FALSE, "child exit code");
+            std::cout << "Profile-only child exit=" << code << '\n';
+            return static_cast<int>(code);
+        }
         void* stats_buffer = VirtualAllocEx(child.info.hProcess, nullptr, sizeof(TdvrCaptureStats), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         wincheck(stats_buffer != nullptr, "VirtualAllocEx stats");
         void* trace_buffer = trace ? VirtualAllocEx(child.info.hProcess, nullptr, sizeof(TdvrRenderTrace),

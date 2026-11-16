@@ -92,6 +92,16 @@ if(WIN32 AND TDVR_BUILD_DIAGNOSTICS)
     $<TARGET_FILE:tdvr_capture_injected_host> $<TARGET_FILE:tdvr_capture>
     ${CMAKE_BINARY_DIR}/test-profile)
   set_tests_properties(dxgi_capture_isolated_profile PROPERTIES TIMEOUT 30)
+  add_executable(tdvr_profile_host native/tests/profile_host.cpp)
+  target_include_directories(tdvr_profile_host PRIVATE native/include)
+  target_compile_features(tdvr_profile_host PRIVATE cxx_std_17)
+  target_compile_definitions(tdvr_profile_host PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(tdvr_profile_host PRIVATE /W4 /WX /permissive-)
+  target_link_libraries(tdvr_profile_host PRIVATE shell32)
+  add_test(NAME development_profile_without_graphics COMMAND tdvr_capture_launcher
+    $<TARGET_FILE:tdvr_profile_host> $<TARGET_FILE:tdvr_capture>
+    ${CMAKE_BINARY_DIR}/test-profile-only --profile-only)
+  set_tests_properties(development_profile_without_graphics PROPERTIES TIMEOUT 30)
   add_test(NAME dxgi_capture_hwnd COMMAND tdvr_capture_host)
   add_test(NAME dxgi_capture_legacy COMMAND tdvr_capture_host --legacy)
   add_test(NAME d3d12_recording_trace COMMAND tdvr_capture_host --trace)

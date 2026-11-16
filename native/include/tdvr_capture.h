@@ -27,5 +27,8 @@ TDVR_CAPTURE_API HRESULT WINAPI TdvrStartCapture();
 // Optional development profile, configured before startup. Redirects this child's
 // AppData/Documents queries and environment; never changes the user's folders.
 TDVR_CAPTURE_API HRESULT WINAPI TdvrConfigureDevelopmentProfile(const wchar_t* root);
+// Start only folder redirection, without touching DXGI/D3D12 or starting XR.
+// Mutually exclusive with capture startup; useful when testing another renderer.
+TDVR_CAPTURE_API HRESULT WINAPI TdvrStartDevelopmentProfile();
 TDVR_CAPTURE_API HRESULT WINAPI TdvrGetCaptureStats(TdvrCaptureStats* stats);
 }

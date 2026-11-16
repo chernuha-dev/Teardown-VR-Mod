@@ -190,3 +190,20 @@ HRESULT=0; после reset видны четыре RT 3440×1440 (DXGI formats 
 заполнилось повторными descriptor writes; группировка без serial исправлена
 и проверена на WARP отдельно, но обновлённая DLL ещё не загружалась в игру.
 Нет eye GPU copy, stereo replay или XR submit; per-eye histories не изолированы.
+
+## Только отдельный профиль
+
+`tdvr_capture_launcher <exe> <tdvr_capture.dll> <profile> --profile-only`
+запускает child с отдельными Local/Roaming AppData, Documents и USERPROFILE.
+Unicode environment block передаётся уже при CreateProcess: CRT может сохранить
+его до configure RPC. SHGetSpecialFolderPathA перенаправляется до primary main.
+Этот режим не устанавливает собственных DXGI/D3D12 hooks и не вызывает XR;
+помещённая в child другая DLL может сама запускать runtime. Capture startup после
+profile-only отвергается, повторный profile-only идемпотентен, повторная
+конфигурация запрещена. CTest development_profile_without_graphics проверяет
+четыре папки и CRT environment, отсутствие capture activity и OpenXR loader.
+Обычный capture mode сохраняет запрет совместного запуска с dsound proxy.
+
+В тесте v1.1.0 обнаружено, что отдельный AppData скрывает также OpenVR path
+registry. Не копировать весь пользовательский профиль и не сбрасывать SteamVR.
+Нужен отдельный целевой runtime-path bootstrap; см. V110_COMPATIBILITY.md.
