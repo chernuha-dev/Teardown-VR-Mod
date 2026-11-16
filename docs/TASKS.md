@@ -53,6 +53,17 @@ SHA-256 + runtime signature: 183 valid samples, 0 rejected, view error ~1.58e-6.
 engine hook. Кандидаты update/camera-setup/frame root записаны в
 ENGINE_COMPATIBILITY.md, но ещё не используются для повторного render pass.
 
+Следующий срез DEV-004/VR-101: `tdvr_engine_camera` подготавливает сразу две
+камеры в наблюдавшемся игровом формате (column-major float, view/projection,
+near/far, 0x88 bytes) и восстанавливает исходный record после render scope,
+включая исключения. Автоматически проверены frustum/depth/scale, отказ при
+потере float precision и отсутствие частичного выхода/записи за границы.
+Адаптер пока не вызывается в движке; world-render boundary и внешние camera
+caches остаются неподтверждёнными. Разбор сохранённого кода исключил 0x7ac30
+из render candidates: это цикл simulation steps, повторять его для второго
+глаза нельзя. Проверки: CTest 12/12, Python 9/9; игра и runtime в этом срезе
+не перезапускались, управление окнами не использовалось.
+
 Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
 D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;
 статические OpenGL imports не доказывают активный OpenGL. Следующий практический

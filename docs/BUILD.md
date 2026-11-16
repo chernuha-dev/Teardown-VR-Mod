@@ -187,3 +187,23 @@ input, GPU renderer с barriers/fences, источник одного состо
 WARP host executable. MinHook v1.3.4 загружается по hash из cmake/MinHook.cmake,
 лицензии копируются к DLL. CTest теперь 9/9, Python 8/8; детали — CAPTURE.md.
 Все capture-тесты используют свой WARP-процесс, без OpenXR и шлема.
+
+## Адаптер игровой камеры
+
+`tdvr_engine_camera` преобразует готовый stereo packet в два camera records
+наблюдавшегося формата Teardown: column-major float projection/view и near/far
+по +0x80/+0x84 (всего 0x88 bytes). Преобразование атомарно относительно выходного
+пакета: сначала проверяются оба глаза, включая float range и сохранение finite
+near/far depth. При отказе выход остаётся прежним. Near/far восстанавливаются
+из исходной double projection, уже с world scale; повторный scale не применяется.
+
+`TdvrEngineCameraScope` сохраняет и восстанавливает ровно этот record, включая
+выход по исключению. Это строительный блок будущего render hook: он сам не
+выбирает игровую камеру, не обновляет внешние frustum/temporal caches, не
+синхронизирует потоки/симуляцию и пока не вызывается в Teardown.
+
+CTest `engine_camera_layout` проверяет независимые asymmetric FOV, аналитические
+world points с yaw и переносом, все frustum edges на трёх глубинах, depth [0,1],
+scaled clip fields, отказ при переполнении float/потере depth precision,
+неизменность пары при ошибке и побайтное восстановление камеры с guard bytes
+при обычном выходе/исключении. Эти проверки не запускают игру или OpenXR.
