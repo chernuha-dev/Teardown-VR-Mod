@@ -243,6 +243,16 @@ CPU fixture проверяет side effects в данных, неизменно�
 history banks, allocator ABI и replay всё ещё не реализованы; VR-102 открыта.
 Сборка и CTest 19/19, Python 21/21 прошли без игры/runtime.
 
+DEV-004/VR-102: EyeHistoryResources выделяет независимые committed D3D12
+textures для двух глаз без понижения format/precision. Atomic rebuild,
+queue-owned fence и scope begin/seal предотвращают замену незавершённых ресурсов;
+небезопасный cleanup удерживает их до process exit, не RemoveDevice.
+WARP прочитал 836 pixels RGBA8/float16 red/green и проверил настоящий pending
+queue gate, allocation rollback и resize. Build-Native.ps1, CTest 20/20,
+Python 21/21. Engine wrappers, пять TAA objects на глаз и CPU history switching
+ещё не подключены; это GPU storage component, не stereo renderer. Пользователь
+ответил «Ещё играю» — игровые/XR-проверки по-прежнему не запускать.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

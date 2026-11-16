@@ -527,3 +527,44 @@ Observer встроен в audited engine hook, но новая сборка в 
 
 Проверено: Build-Native.ps1 -BuildDirectory build/native-trace, CTest 19/19,
 Python 21/21. Настоящая игра/runtime/шлем в этом срезе не запускались.
+
+
+### Owned GPU storage для истории двух глаз
+
+EyeHistoryResources создаёт два независимых набора (до 10 textures в каждом)
+через CreateCommittedResource на device конкретной node-0 DIRECT queue.
+Поддерживает 2D / single mip/layer/sample; сохраняет format, extent и flags,
+не уменьшает precision/качество. Новые allocations стартуют в COMMON с
+неопределённым содержимым: caller обязан сделать initialization/TAA reset,
+подготовить нужные descriptors/views и вести реальные resource states.
+
+rebuild выделяет всю новую пару до замены старой. Ошибка allocation не меняет
+действующий bank. begin_use возвращает borrowed textures только в scope до
+seal_use; повторный begin/rebuild в этом scope отвергается. Caller должен
+сначала отправить ВСЕ uses в указанную queue, затем seal_use ставит собственный
+GPU fence. Пока fence pending, begin/rebuild возвращают WAS_STILL_DRAWING,
+не блокируя CPU. Это только один известный queue timeline: неизвестные uses на
+других queues, будущие submissions после seal и reuse borrowed pointers вне
+scope не покрываются; для игрового backend их нужно исключить/синхронизировать.
+
+При Signal error/device loss bank останавливается. Destructor при незавершённом
+scope/fence или terminal error удерживает queue/fence/allocations до конца
+процесса. RemoveDevice не вызывается. Подтверждение завершения использует
+собственный, не переданный извне fence: семантика
+[queue synchronization](https://learn.microsoft.com/en-us/windows/win32/direct3d12/user-mode-heap-synchronization),
+[GetCompletedValue / device removal](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12fence-getcompletedvalue).
+Настоящий Signal failure / зависание физического GPU в этом тесте не вызывались.
+
+CTest per_eye_history_gpu_lifetime создаёт настоящий WARP device, independent
+RGBA8 UNORM и RGBA16 FLOAT banks, clear red/green и readback всех 836 pixels.
+GPU Wait на отдельном fence намеренно удерживает queue: pending bank не может
+быть заменён/повторно выдан. После CPU release gate и bounded completion
+проверяются pixels, invalid descriptor, частичная ошибка allocation с rollback
+и успешная замена extent. Ни OpenXR loader, ни игра в этот test не линкуются.
+Итог: Build-Native.ps1, CTest 20/20, Python 21/21.
+
+Это реальное GPU storage, пока не подключённое к engine texture wrappers/TAA
+objects. Оно не создаёт пять engine-specific TAA objects, не переключает CPU
+history state и не запускает stereo replay. Соответствие настоящих history
+formats/queues/ownership ещё нужно проверить через engine observer; пользователь
+подтвердил, что всё ещё играет, поэтому новая game/runtime проверка не выполнялась.
