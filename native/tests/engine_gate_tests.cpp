@@ -15,6 +15,10 @@ int main() {
     if (FAILED(TdvrGetWorldRenderStats(&world)) || world.calls || world.completed_calls
         || world.valid_samples || world.signature_matched || world.hook_installed) return 1;
     TdvrCameraOverrideRequest request{}; request.size = sizeof(request); request.abi = 1;
+    TdvrEngineTargetStats targets{};
+    if (TdvrGetEngineTargetStats(&targets) != E_INVALIDARG) return 1;
+    targets.size = sizeof(targets); targets.abi = 1;
+    if (FAILED(TdvrGetEngineTargetStats(&targets)) || targets.samples || targets.known_mask || targets.count) return 1;
     if (TdvrSubmitCameraOverride(nullptr) != E_INVALIDARG
         || TdvrSubmitCameraOverride(&request) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)) return 1;
     TdvrCameraOverrideStats override_stats{};

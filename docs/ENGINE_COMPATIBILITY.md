@@ -182,3 +182,20 @@ ID3D12Resource* в CreateRTV, затем barrier и ClearRenderTargetView.
 Это вывод из потока инструкций, не контракт для самостоятельного владения
 ресурсами: layout ещё не проверялся typed hook/COM identity/readback, нельзя
 подменять по нему объекты или повторять world render без дальнейшей проверки.
+
+На работающей development-вилле прочитано Game+0x888: output target имеет
+размер 3440×1440 и один color attachment. Его wrapper+0x38 указывает на объект
+с vtable methods 0/7/10 в D3D12Core.dll. Это app-local Agility SDK, а не System32:
+`D3D12/D3D12Core.dll`, 5617048 bytes, SHA-256
+`8710110eccf43a32e5e1a04552cb344832922a0cd23caeecb764e18bd5cdffa8`.
+Authenticode: Valid, Microsoft Corporation. DLL/код в Git не копируются.
+
+Новый `--engine-targets` читает target layout на render thread после world render,
+проверяет принадлежность vtable methods доверенному Core и только затем вызывает
+QueryInterface(ID3D12Resource)/GetDesc. Не создаёт GPU work и не удерживает
+ресурс между samples; known/matching masks не означают ownership или StateBefore.
+Первая загруженная сборка отвергла app-local Core из-за System32-only допуска
+(143 rejected samples), не вызвав COM. Исправление допускает указанный app-local
+path только с точными size/hash, либо системный Core. Оно собрано и прошло gate
+test отдельно; в текущий процесс исправленная DLL ещё не загружалась (module
+pinned). Успех GetDesc в игре пока не подтверждён, требуется следующий запуск.

@@ -11,6 +11,8 @@
 #include <vector>
 #include <cstring>
 #include <cwctype>
+#include <d3d12.h>
+#include <wrl/client.h>
 
 namespace {
 constexpr uintptr_t camera_rva = 0x5ded80;
@@ -33,6 +35,7 @@ struct State {
     WorldRender world_original = nullptr;
     std::atomic<uint64_t> world_calls{0}, world_completed{0};
     TdvrWorldRenderStats world_stats{sizeof(TdvrWorldRenderStats), 1};
+    TdvrEngineTargetStats target_stats{sizeof(TdvrEngineTargetStats), 1};
     TdvrCameraOverride override_camera;
     std::atomic<bool> override_pending{false};
     TdvrCameraOverrideStats override_stats{sizeof(TdvrCameraOverrideStats), 1};
@@ -69,7 +72,7 @@ bool writable_camera(void* object) {
         || access == PAGE_EXECUTE_WRITECOPY) && address >= start
         && address-start <= region.RegionSize && sizeof(TdvrEngineCameraMatrices) <= region.RegionSize-(address-start);
 }
-bool match_hash(const wchar_t* path) {
+bool match_file_hash(const wchar_t* path, uint64_t expected_size, const std::array<unsigned char, 32>& expected_hash) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
     BCRYPT_HASH_HANDLE hash = nullptr;
     if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return false;
@@ -85,10 +88,30 @@ bool match_hash(const wchar_t* path) {
         if (count && BCryptHashData(hash, reinterpret_cast<PUCHAR>(buffer.data()), static_cast<ULONG>(count), 0) < 0) ok = false;
     }
     std::array<unsigned char, 32> digest{};
-    ok = ok && file.eof() && size == 13655624 && BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0;
+    ok = ok && file.eof() && size == expected_size && BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0;
     if (hash) BCryptDestroyHash(hash);
     BCryptCloseAlgorithmProvider(algorithm, 0);
-    return ok && digest == observed_hash;
+    return ok && digest == expected_hash;
+}
+bool match_hash(const wchar_t* path) { return match_file_hash(path, 13655624, observed_hash); }
+HMODULE trusted_d3d12_core() {
+    // Resolve once: application-local Agility SDK is not the System32 loader.
+    static const HMODULE trusted = []() -> HMODULE {
+        const auto core = GetModuleHandleW(L"D3D12Core.dll");
+        wchar_t filename[32768]{}, system[32768]{}, executable[32768]{};
+        if (!core || !GetModuleFileNameW(core, filename, static_cast<DWORD>(std::size(filename)))
+            || !GetSystemDirectoryW(system, static_cast<UINT>(std::size(system)))) return nullptr;
+        if (!_wcsicmp(filename, (std::wstring(system)+L"\\D3D12Core.dll").c_str())) return core;
+        if (!GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable)))) return nullptr;
+        const std::wstring exe(executable);
+        const auto slash = exe.find_last_of(L"\\/");
+        if (slash == std::wstring::npos || _wcsicmp(filename, (exe.substr(0, slash)+L"\\D3D12\\D3D12Core.dll").c_str())) return nullptr;
+        constexpr std::array<unsigned char, 32> agility_hash{{
+            0x87,0x10,0x11,0x0e,0xcc,0xf4,0x3a,0x32,0xe5,0xe1,0xa0,0x45,0x52,0xcb,0x34,0x48,
+            0x32,0x92,0x2a,0x0c,0xd2,0x3c,0xae,0xec,0xb7,0x64,0xe1,0x8b,0xd5,0xcd,0xff,0xa8}};
+        return match_file_hash(filename, 5617048, agility_hash) ? core : nullptr;
+    }();
+    return trusted;
 }
 void observe(void* object, const float* position, const float* orientation) noexcept {
     auto& s = state();
@@ -129,6 +152,41 @@ void camera(void* object, const float* position, const float* orientation) {
     observe(object, position, orientation);
 }
 struct RenderState { uint64_t serial; uint32_t history_a, history_b; };
+// Only the audited target/wrapper layout, on the render thread after the engine
+// used it. Never invoke arbitrary candidate vtables or dereference from an RPC.
+TdvrEngineTargetStats observe_target(void* target, uintptr_t game) {
+    TdvrEngineTargetStats result{sizeof(TdvrEngineTargetStats), 1};
+    read(reinterpret_cast<void*>(game+8), &result.game_state, sizeof(result.game_state));
+    if (!read(target, &result.width, 2*sizeof(uint32_t))
+        || !read(static_cast<char*>(target)+0x30, &result.count, sizeof(result.count))
+        || !result.count || result.count > 8 || !result.width || !result.height) return result;
+    const auto core = trusted_d3d12_core();
+    if (!core) return result;
+    for (uint32_t i = 0; i < result.count; ++i) {
+        uintptr_t wrapper = 0, resource = 0, table[11]{}, vtable = 0;
+        if (!read(static_cast<char*>(target)+0x38+i*sizeof(uintptr_t), &wrapper, sizeof(wrapper)) || !wrapper
+            || !read(reinterpret_cast<void*>(wrapper+0x38), &resource, sizeof(resource)) || !resource
+            || !read(reinterpret_cast<void*>(resource), &vtable, sizeof(vtable))
+            || !read(reinterpret_cast<void*>(vtable), table, sizeof(table))) continue;
+        bool trusted = true;
+        for (const auto slot : {0, 7, 10}) {
+            HMODULE owner = nullptr;
+            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(table[slot]), &owner) || owner != core) trusted = false;
+        }
+        if (!trusted) continue;
+        Microsoft::WRL::ComPtr<ID3D12Resource> confirmed;
+        if (FAILED(reinterpret_cast<IUnknown*>(resource)->QueryInterface(IID_PPV_ARGS(&confirmed)))) continue;
+        const auto desc = confirmed->GetDesc();
+        result.colors[i] = {desc.Width, desc.Height, static_cast<uint32_t>(desc.Format),
+            static_cast<uint32_t>(desc.Flags), desc.SampleDesc.Count, static_cast<uint32_t>(desc.Dimension),
+            desc.MipLevels, desc.DepthOrArraySize, 0};
+        result.known_mask |= 1u << i;
+        if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D
+            && desc.Width == result.width && desc.Height == result.height) result.matching_extent_mask |= 1u << i;
+    }
+    return result;
+}
 void world_render(void* scene, void* target, void* player, void* camera_object) {
     auto& s = state();
     const auto count = s.world_calls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -175,9 +233,21 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     } else s.world_original(scene, target, player, camera_object);
     s.world_completed.fetch_add(1, std::memory_order_relaxed);
     if (!sample) return;
+    TdvrEngineTargetStats targets{sizeof(TdvrEngineTargetStats), 1};
+    if (main_camera) {
+        try { targets = observe_target(target, game); }
+        catch (...) {} // diagnostics must never unwind into the game's renderer
+    }
     valid = valid && read(camera_object, after, sizeof(after))
         && read(static_cast<char*>(scene)+0x2208, &state_after, sizeof(state_after));
     std::lock_guard<std::mutex> lock(s.mutex);
+    const auto samples = s.target_stats.samples+1;
+    const auto required = targets.count && targets.count <= 8 ? (1u << targets.count)-1 : 0;
+    const bool confirmed = required && targets.known_mask == required && targets.matching_extent_mask == required;
+    const auto accepted = s.target_stats.valid_samples + (confirmed ? 1 : 0);
+    const auto rejected = s.target_stats.rejected_samples + (confirmed ? 0 : 1);
+    s.target_stats = targets;
+    s.target_stats.samples = samples; s.target_stats.valid_samples = accepted; s.target_stats.rejected_samples = rejected;
     auto& stats = s.world_stats;
     if (!valid) { ++stats.invalid_samples; return; }
     ++stats.valid_samples;
@@ -241,6 +311,10 @@ HRESULT WINAPI TdvrGetWorldRenderStats(TdvrWorldRenderStats* stats) {
     stats->calls = s.world_calls.load(std::memory_order_relaxed);
     stats->completed_calls = s.world_completed.load(std::memory_order_relaxed);
     return S_OK;
+}
+HRESULT WINAPI TdvrGetEngineTargetStats(TdvrEngineTargetStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.target_stats; return S_OK;
 }
 HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request) {
     if (!request || request->size != sizeof(*request) || request->abi != 1) return E_INVALIDARG;

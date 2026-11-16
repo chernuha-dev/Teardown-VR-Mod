@@ -29,10 +29,22 @@ struct TdvrCameraOverrideStats {
     uint32_t remaining_calls, reserved;
     float last_camera[34];
 };
+struct TdvrEngineResourceInfo {
+    uint64_t width;
+    uint32_t height, format, flags, samples, dimension, mips, layers, reserved;
+};
+struct TdvrEngineTargetStats {
+    uint32_t size, abi;
+    uint64_t samples, valid_samples, rejected_samples;
+    uint32_t width, height, count, game_state, known_mask, matching_extent_mask;
+    TdvrEngineResourceInfo colors[8]; // GetDesc metadata only; no exported pointers/ownership
+};
+static_assert(sizeof(TdvrEngineResourceInfo) == 40 && sizeof(TdvrEngineTargetStats) == 376, "target diagnostic ABI");
 extern "C" {
 TDVR_ENGINE_API HRESULT WINAPI TdvrStartEngineProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetWorldRenderStats(TdvrWorldRenderStats* stats);
+TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineTargetStats(TdvrEngineTargetStats* stats);
 // Development-only, bounded synthetic camera input. Zero render_calls cancels.
 // Requires a valid audited main-camera observation first. No simulation replay.
 TDVR_ENGINE_API HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request);

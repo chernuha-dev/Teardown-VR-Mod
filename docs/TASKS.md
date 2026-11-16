@@ -121,6 +121,16 @@ Python 9/9 и отдельный hardware run на RX 6900 XT (221 pixels per ey
 row pitch 256, cross-device rejection=1). Runtime и UI не запускались.
 Подробности — BUILD.md.
 
+DEV-004/005: world-render observer расширен metadata output target; CLI
+`--engine-targets [--stats-only]` не публикует pointers. В development-вилле
+подтверждены 3440×1440 / один attachment, vtable resource в app-local Agility
+D3D12Core. Первоначальный System32-only gate закономерно отказал (143 samples);
+добавлен точный size/hash gate для Microsoft-signed game-local Core. Исправленная
+DLL собрана отдельно и прошла unknown-host/ABI gate; её GetDesc в игре ещё
+не подтверждён, старый module pinned до выхода процесса. Полный CTest 14/14
+прошёл до этой коррекции gate, после неё повторён затронутый engine gate;
+Python 9/9. UI/runtime не запускались. GPU copy/replay всё ещё не включены.
+
 Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
 D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;
 статические OpenGL imports не доказывают активный OpenGL. Следующий практический
