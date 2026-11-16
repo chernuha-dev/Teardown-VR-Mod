@@ -19,6 +19,12 @@ int main() {
     if (TdvrGetEngineTargetStats(&targets) != E_INVALIDARG) return 1;
     targets.size = sizeof(targets); targets.abi = 1;
     if (FAILED(TdvrGetEngineTargetStats(&targets)) || targets.samples || targets.known_mask || targets.count) return 1;
+    TdvrTemporalStats temporal{};
+    if (TdvrGetTemporalStats(nullptr) != E_INVALIDARG || TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;
+    temporal.size = sizeof(temporal); temporal.abi = 2;
+    if (TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;
+    temporal.abi = 1;
+    if (FAILED(TdvrGetTemporalStats(&temporal)) || temporal.samples || temporal.last_sample_valid) return 1;
     if (TdvrSubmitCameraOverride(nullptr) != E_INVALIDARG
         || TdvrSubmitCameraOverride(&request) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)) return 1;
     TdvrCameraOverrideStats override_stats{};

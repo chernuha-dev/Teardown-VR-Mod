@@ -496,3 +496,34 @@ python scripts/Inspect-TemporalCompatibility.py --game local/game-dev/game/teard
 TAA create 0xa41a0, три release CALL → 0x5dde10, buffer release 0x5bd420.
 Это адреса-кандидаты для дальнейшего анализа ABI, не разрешение вызывать их.
 Подробности resource contract reference DLL — V110_COMPATIBILITY.md.
+
+
+### Read-only temporal observer
+
+Engine probe собирает before/after CPU observations вокруг каждого 16-го
+валидного main-camera world render. TdvrGetTemporalStats: size/ABI=1, 296 bytes.
+Базовые serial/history/reset должны читаться полностью; иначе sample rejected.
+Опциональные 10 scene slots, opaque descriptor prefix 0x38 и 5 TAA slots имеют
+раздельные readable/presence masks. TAA first word не объявляется доказанным
+счётчиком кадра. Scene/TAA pointer changes сравниваются только при читаемых
+slots с обеих сторон; descriptor changes — точным сравнением bytes при обоих
+readable descriptors. Наружу выходят лишь маски и fingerprints, без указателей.
+
+Helper получает функцию безопасного чтения и проверяет overflow адресов до её
+вызова. Engine использует ReadProcessMemory внутри собственного процесса;
+не разыменовывает TAA resources, не вызывает COM, allocator, destructor или
+renderer idle и не пишет memory. Чтение может совпасть с изменением памяти
+другим потоком: это наблюдение, не atomic state или GPU ownership proof.
+Потребитель обязан проверять last_sample_valid и individual masks; сериализация
+engine-status не выдаёт before/after после отказа последнего sample.
+
+CPU test моделирует 10 descriptor regions, 5 opaque TAA handles, serial/history
+swap, pointer replacement, изменение последнего descriptor byte, исчезновение
+optional objects, отказ basic read и address overflow. Проверяется неизменность
+исходной памяти и отсутствие чтения opaque GPU handles. Engine gate проверяет
+null/size/ABI и нулевые stats неизвестного EXE без установки hooks.
+Observer встроен в audited engine hook, но новая сборка в настоящей игре ещё
+не загружалась: пользовательская миссия продолжается, runtime не запускается.
+
+Проверено: Build-Native.ps1 -BuildDirectory build/native-trace, CTest 19/19,
+Python 21/21. Настоящая игра/runtime/шлем в этом срезе не запускались.

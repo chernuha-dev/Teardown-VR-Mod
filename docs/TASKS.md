@@ -233,6 +233,16 @@ Allocator ABI/ownership/GPU states ещё не проверены: replay ост
 Проверка аудитора на pinned файлах и Python 21/21 прошли; native в этом срезе
 не менялся (последний CTest 18/18).
 
+DEV-005/VR-102: read-only temporal observer подключён к sampled main-camera
+world boundary и engine-status через TdvrGetTemporalStats. Перед/после читает
+serial/history/reset, 10 descriptor prefixes и 5 TAA pointer slots; публикует
+маски и fingerprints, не адреса. Никаких writes/COM/allocation/history swaps.
+CPU fixture проверяет side effects в данных, неизменность памяти, mask failures
+и bounds; неизвестный host не включает hooks. Реальная scene проверка новой
+сборки отложена до сообщения пользователя о завершении миссии. Разделение GPU
+history banks, allocator ABI и replay всё ещё не реализованы; VR-102 открыта.
+Сборка и CTest 19/19, Python 21/21 прошли без игры/runtime.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

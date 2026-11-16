@@ -38,6 +38,7 @@ struct State {
     std::atomic<uint64_t> world_calls{0}, world_completed{0};
     TdvrWorldRenderStats world_stats{sizeof(TdvrWorldRenderStats), 1};
     TdvrEngineTargetStats target_stats{sizeof(TdvrEngineTargetStats), 1};
+    TdvrTemporalStats temporal_stats{sizeof(TdvrTemporalStats), 1};
     TdvrCameraOverride override_camera;
     std::atomic<bool> override_pending{false};
     TdvrCameraOverrideStats override_stats{sizeof(TdvrCameraOverrideStats), 1};
@@ -47,6 +48,9 @@ State& state() { static auto* s = new State; return *s; }
 bool read(const void* address, void* out, size_t size) {
     SIZE_T bytes = 0;
     return ReadProcessMemory(GetCurrentProcess(), address, out, size, &bytes) && bytes == size;
+}
+bool temporal_read(uint64_t address, void* out, size_t size, void*) {
+    return read(reinterpret_cast<const void*>(address),out,size);
 }
 bool development_process() {
     wchar_t executable[32768]{}, module_path[32768]{}, profile[32768]{};
@@ -208,6 +212,10 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
             && game && reinterpret_cast<uintptr_t>(camera_object) == game+0x240;
     }
     TdvrEngineCameraMatrices selected{};
+    TdvrTemporalObservation temporal_before, temporal_after;
+    const bool temporal_sample = sample && valid && main_camera;
+    const bool temporal_before_valid = temporal_sample
+        && tdvr_observe_temporal(reinterpret_cast<uintptr_t>(scene),temporal_read,nullptr,temporal_before);
     bool apply = false;
     if (pending) {
         std::lock_guard<std::mutex> lock(s.mutex);
@@ -252,7 +260,20 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     }
     valid = valid && read(camera_object, after, sizeof(after))
         && read(static_cast<char*>(scene)+0x2208, &state_after, sizeof(state_after));
+    const bool temporal_after_valid = temporal_sample
+        && tdvr_observe_temporal(reinterpret_cast<uintptr_t>(scene),temporal_read,nullptr,temporal_after);
     std::lock_guard<std::mutex> lock(s.mutex);
+    if (temporal_sample) {
+        auto& temporal = s.temporal_stats;
+        ++temporal.samples;
+        temporal.last_sample_valid = temporal_before_valid && temporal_after_valid ? 1u : 0u;
+        if (!temporal.last_sample_valid) ++temporal.rejected;
+        else {
+            temporal.before = temporal_before.state; temporal.after = temporal_after.state;
+            tdvr_compare_temporal(temporal_before,temporal_after,temporal.scene_changed_mask,
+                temporal.taa_changed_mask,temporal.descriptor_changed_mask);
+        }
+    }
     const auto samples = s.target_stats.samples+1;
     const auto required = targets.count && targets.count <= 8 ? (1u << targets.count)-1 : 0;
     const bool confirmed = required && targets.known_mask == required && targets.matching_extent_mask == required;
@@ -332,6 +353,10 @@ HRESULT WINAPI TdvrGetWorldRenderStats(TdvrWorldRenderStats* stats) {
 HRESULT WINAPI TdvrGetEngineTargetStats(TdvrEngineTargetStats* stats) {
     if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.target_stats; return S_OK;
+}
+HRESULT WINAPI TdvrGetTemporalStats(TdvrTemporalStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.temporal_stats; return S_OK;
 }
 HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request) {
     if (!request || request->size != sizeof(*request) || request->abi != 1) return E_INVALIDARG;

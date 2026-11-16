@@ -35,9 +35,18 @@ panel stats недоступны; её нельзя считать отсутс�
 изменения history/serial, thread changes и размеры output target. Сначала
 отдельно подключить engine observer через Probe-DevelopmentCamera.py.
 При его отсутствии возвращается engine_probe_not_loaded; команда сама не
-устанавливает hooks. Три блока являются отдельными наблюдениями, не атомарным
+устанавливает hooks. Блоки являются отдельными наблюдениями, не атомарным
 snapshot симуляции. На этом срезе команда собрана и проходит локальные проверки;
 её сквозная проверка в настоящей игре отложена, пока пользователь играет.
+
+В новой сборке engine-status также содержит temporal: до/после одного sampled
+world render читаются serial/history/reset, первый word TAA и маски доступных
+CPU slots/descriptor prefixes. Показываются изменения scene/TAA pointers и
+descriptor bytes, без публикации адресов. Descriptor hashes — hex strings,
+а не числа JSON, чтобы сохранять все 64 bits. При last_sample_valid=0 старые
+before/after не выдаются. Masks сообщают только об успешном чтении CPU memory,
+не подтверждают COM identity, GPU states или lifetime/ownership ресурсов.
+В настоящей игре этот новый observer ещё не проверен.
 
 `xr-views` читает последний owned snapshot поз/FOV обоих глаз. `available=1`
 означает, что на последнем обработанном XR-кадре обе позы valid/tracked и

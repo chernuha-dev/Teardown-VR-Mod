@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <cstdint>
 #include "tdvr_camera_override.h"
+#include "tdvr_temporal_observer.h"
 #ifdef TDVR_ENGINE_BUILD
 #define TDVR_ENGINE_API __declspec(dllexport)
 #else
@@ -45,6 +46,7 @@ TDVR_ENGINE_API HRESULT WINAPI TdvrStartEngineProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetWorldRenderStats(TdvrWorldRenderStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineTargetStats(TdvrEngineTargetStats* stats);
+TDVR_ENGINE_API HRESULT WINAPI TdvrGetTemporalStats(TdvrTemporalStats* stats);
 // Development-only, bounded synthetic camera input. Zero render_calls cancels.
 // Requires a valid audited main-camera observation first. No simulation replay.
 TDVR_ENGINE_API HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request);

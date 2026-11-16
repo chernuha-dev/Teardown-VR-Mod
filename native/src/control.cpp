@@ -49,15 +49,19 @@ std::string engine_status() {
     const auto camera_fn = reinterpret_cast<HRESULT (WINAPI*)(TdvrEngineStats*)>(GetProcAddress(engine, "TdvrGetEngineStats"));
     const auto world_fn = reinterpret_cast<HRESULT (WINAPI*)(TdvrWorldRenderStats*)>(GetProcAddress(engine, "TdvrGetWorldRenderStats"));
     const auto target_fn = reinterpret_cast<HRESULT (WINAPI*)(TdvrEngineTargetStats*)>(GetProcAddress(engine, "TdvrGetEngineTargetStats"));
+    const auto temporal_fn = reinterpret_cast<HRESULT (WINAPI*)(TdvrTemporalStats*)>(GetProcAddress(engine, "TdvrGetTemporalStats"));
     TdvrEngineStats camera{}; camera.size = sizeof(camera); camera.abi = 1;
     TdvrWorldRenderStats world{}; world.size = sizeof(world); world.abi = 1;
     TdvrEngineTargetStats target{}; target.size = sizeof(target); target.abi = 1;
+    TdvrTemporalStats temporal{}; temporal.size = sizeof(temporal); temporal.abi = 1;
     const auto camera_hr = camera_fn ? camera_fn(&camera) : E_NOINTERFACE;
     const auto world_hr = world_fn ? world_fn(&world) : E_NOINTERFACE;
     const auto target_hr = target_fn ? target_fn(&target) : E_NOINTERFACE;
+    const auto temporal_hr = temporal_fn ? temporal_fn(&temporal) : E_NOINTERFACE;
     std::ostringstream out; out.imbue(std::locale::classic()); out.precision(17);
     out << "{\"ok\":true,\"protocol\":1,\"pid\":" << GetCurrentProcessId()
-        << ",\"camera_hresult\":" << camera_hr << ",\"world_hresult\":" << world_hr << ",\"target_hresult\":" << target_hr;
+        << ",\"camera_hresult\":" << camera_hr << ",\"world_hresult\":" << world_hr << ",\"target_hresult\":" << target_hr
+        << ",\"temporal_hresult\":" << temporal_hr;
     // These are separate observational snapshots, not an atomic stereo frame.
     // Return null for invalid floating-point samples rather than invalid JSON.
     auto array = [&](const auto& values) {
@@ -87,6 +91,25 @@ std::string engine_status() {
             << ",\"rejected\":" << target.rejected_samples << ",\"game_state\":" << target.game_state
             << ",\"width\":" << target.width << ",\"height\":" << target.height << ",\"count\":" << target.count
             << ",\"known_mask\":" << target.known_mask << ",\"matching_extent_mask\":" << target.matching_extent_mask << '}';
+    }
+    if (SUCCEEDED(temporal_hr)) {
+        out << ",\"temporal\":{\"samples\":" << temporal.samples << ",\"rejected\":" << temporal.rejected
+            << ",\"last_sample_valid\":" << temporal.last_sample_valid;
+        if (temporal.last_sample_valid) {
+            out << ",\"scene_changed_mask\":" << temporal.scene_changed_mask << ",\"taa_changed_mask\":" << temporal.taa_changed_mask
+                << ",\"descriptor_changed_mask\":" << temporal.descriptor_changed_mask;
+            auto emit = [&](const TdvrTemporalState& state) {
+                out << "{\"serial\":" << state.serial << ",\"history\":[" << state.history[0] << ',' << state.history[1]
+                    << "],\"reset\":" << state.reset_flag << ",\"taa_word\":" << state.taa_word
+                    << ",\"taa_word_readable\":" << state.taa_word_readable << ",\"scene_slot_mask\":" << state.scene_slot_mask
+                    << ",\"scene_descriptor_mask\":" << state.scene_descriptor_mask << ",\"taa_slot_mask\":" << state.taa_slot_mask
+                    << ",\"taa_presence_mask\":" << state.taa_presence_mask << ",\"descriptor_hashes\":[";
+                for (unsigned i = 0; i < 10; ++i) { if (i) out << ','; out << "\"" << std::hex << state.descriptor_hashes[i] << "\"" << std::dec; }
+                out << "]}";
+            };
+            out << ",\"before\":"; emit(temporal.before); out << ",\"after\":"; emit(temporal.after);
+        }
+        out << '}';
     }
     out << '}'; return out.str();
 }
