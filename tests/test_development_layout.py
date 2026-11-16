@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/Stage-DevelopmentGame.py"
@@ -28,10 +29,19 @@ class DevelopmentLayoutTests(unittest.TestCase):
             identity = {"parse_status": "ok", "compatibility": {"identity_status": "observed_only"},
                         "identity": {"sha256": LAYOUT.hashlib.sha256(b"teardown.exe").hexdigest()}}
             destination = root / "repo/local/development"
-            with patch.object(LAYOUT, "REPO", root / "repo"), patch.object(LAYOUT.IDENTITY, "inspect_file", return_value=identity):
+            with patch.object(LAYOUT, "REPO", root / "repo"), patch.object(LAYOUT.IDENTITY, "inspect_file", return_value=identity), \
+                    patch.object(LAYOUT.shutil, "disk_usage", return_value=SimpleNamespace(free=8 * 1024**3)) as disk:
                 dry = LAYOUT.stage(source, destination, options, dry_run=True)
                 self.assertFalse(destination.exists())
                 self.assertEqual(dry["file_count"], 3)
+                disk.assert_not_called()
+                # Reject before creating anything, including when only the
+                # reserve fits. Tests must not depend on this PC's free space.
+                disk.return_value = SimpleNamespace(free=1024**3)
+                with self.assertRaisesRegex(ValueError, "free space"):
+                    LAYOUT.stage(source, destination, options)
+                self.assertFalse(destination.exists())
+                disk.return_value = SimpleNamespace(free=8 * 1024**3)
                 actual = LAYOUT.stage(source, destination, options)
                 self.assertFalse(actual["launched"])
                 self.assertTrue((destination / "game/dxcompiler.dll").exists())
