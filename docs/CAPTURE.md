@@ -151,3 +151,42 @@ prefix и EXE SHA проверяются до установки обоих hook
 original вызывается один раз с исходными аргументами, без удержания stats mutex.
 В desktop-сцене подтверждены 780 завершённых вызовов и 49 корректных samples;
 подробные ограничения и side effects — ENGINE_COMPATIBILITY.md.
+
+## Наблюдение render targets
+
+Opt-in `--trace` дополнительно устанавливает hooks CreateRenderTargetView,
+CopyDescriptors/CopyDescriptorsSimple и OMSetRenderTargets. Исходные вызовы
+всегда передаются один раз с прежними аргументами; GPU work не добавляется.
+Наблюдение рассчитано на один device/backend за процесс. Сохраняется таблица
+до 512 CPU descriptors с GetDesc ресурса и serial последней записи. Копирование
+дескриптора инвалидирует метаданные назначения: такой binding отмечается
+unknown, а не получает устаревший формат. Null resource также unknown.
+Ресурсы не удерживаются по descriptor и не разыменовываются после CreateRTV.
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --dll build/native/Release/tdvr_capture.dll --target-trace --reset-trace
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --dll build/native/Release/tdvr_capture.dll --target-trace
+```
+
+Окно наблюдения: первые 32 bindings, затем каждый 64-й до 65536. До 32
+уникальных записей, 8 RT attachments и 12 EXE return RVAs; dropped показывает
+переполнение. Группировка использует shape/caller, исключая write serial:
+движок может переписывать один descriptor каждый проход. Поле creation относится
+к первому sample группы, это **не** токен владения или lifetime ресурса.
+Reset очищает samples/counters, сохраняя текущую descriptor table и serial.
+
+Width/height — полные размеры ресурса, не viewport/mip extent. view_format
+содержит исходный Format (0 = DXGI_FORMAT_UNKNOWN, наследуется от ресурса),
+либо resource Format при null pDesc; правило наследования описано в
+[Microsoft D3D12_RENDER_TARGET_VIEW_DESC](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ns-d3d12-d3d12_render_target_view_desc).
+Depth target, subresource, resource state, command-list submission/fences и
+соответствие конкретному eye здесь не отслеживаются.
+
+WARP test проверяет contiguous/array MRT, порядок attachments, обе формы
+descriptor copy, повторные записи, resize, opt-in/ABI/reset и точные пиксели.
+В desktop development-процессе предыдущая сборка этого среза дала hook_mask=15,
+HRESULT=0; после reset видны четыре RT 3440×1440 (DXGI formats 29/31/28/34)
+на stack 0x86f46 → 0x6fd57 и последующие одноцелевые проходы. Начальное окно
+заполнилось повторными descriptor writes; группировка без serial исправлена
+и проверена на WARP отдельно, но обновлённая DLL ещё не загружалась в игру.
+Нет eye GPU copy, stereo replay или XR submit; per-eye histories не изолированы.

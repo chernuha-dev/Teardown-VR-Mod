@@ -52,6 +52,23 @@ class RenderTrace(c.Structure):
                 ("last_hresult", c.c_int32), ("exhausted", c.c_uint32), ("generation", c.c_uint64), ("records", RenderStack * 64)]
 
 
+class TargetView(c.Structure):
+    _fields_ = [("creation", c.c_uint64), ("width", c.c_uint64),
+                *[(name, c.c_uint32) for name in ("height", "resource_format", "view_format", "dimension", "samples", "flags")]]
+
+
+class TargetBinding(c.Structure):
+    _fields_ = [(name, c.c_uint32) for name in ("count", "contiguous", "depth", "known_mask")] + [
+        ("rvas", c.c_uint32 * 12), ("views", TargetView * 8)]
+
+
+class TargetTrace(c.Structure):
+    _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
+                *[(name, c.c_uint64) for name in ("bindings", "descriptor_writes", "dropped")],
+                ("hook_mask", c.c_uint32), ("record_count", c.c_uint32),
+                ("last_hresult", c.c_int32), ("reserved", c.c_uint32), ("records", TargetBinding * 32)]
+
+
 class FrameKey(c.Structure):
     _fields_ = [("simulation_id", c.c_uint64), ("time_ns", c.c_int64)]
 
@@ -83,7 +100,7 @@ class CameraOverrideStats(c.Structure):
                 ("remaining_calls", c.c_uint32), ("reserved", c.c_uint32), ("last_camera", c.c_float * 34)]
 
 
-def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_render=False, camera_test=None, override_stats=False):
+def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_render=False, camera_test=None, override_stats=False, target_trace=False):
     k = c.WinDLL("kernel32", use_last_error=True)
     declarations = {
         "OpenProcess": ([w.DWORD, w.BOOL, w.DWORD], w.HANDLE),
@@ -171,9 +188,9 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
 
         local = check(k.LoadLibraryW(str(dll)), "load local probe exports")
         try:
-            start_address = check(k.GetProcAddress(local, b"TdvrResetRenderTrace" if render_trace else b"TdvrStartEngineProbe"), "start export")
-            stats_export = b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else
-                            (b"TdvrGetCameraOverrideStats" if override_stats else b"TdvrGetEngineStats"))
+            start_address = check(k.GetProcAddress(local, b"TdvrResetTargetTrace" if target_trace else (b"TdvrResetRenderTrace" if render_trace else b"TdvrStartEngineProbe")), "start export")
+            stats_export = b"TdvrGetTargetTrace" if target_trace else (b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else
+                            (b"TdvrGetCameraOverrideStats" if override_stats else b"TdvrGetEngineStats")))
             stats_address = check(k.GetProcAddress(local, stats_export), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
             if camera_test is not None:
@@ -215,7 +232,7 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
             value = kind(); value.size, value.abi = c.sizeof(value), 1
             return exchange(offset, value)
 
-        kind = RenderTrace if render_trace else (WorldRenderStats if world_render else (CameraOverrideStats if override_stats else EngineStats))
+        kind = TargetTrace if target_trace else (RenderTrace if render_trace else (WorldRenderStats if world_render else (CameraOverrideStats if override_stats else EngineStats)))
         stats = read_stats(stats_offset, kind)
         if camera_test is not None:
             request = CameraRequest(); request.size, request.abi = c.sizeof(request), 1
@@ -243,6 +260,16 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
                     sample.fov = Fov(*fov)
             exchange(submit_offset, request, readback=False)
             stats = read_stats(override_offset, CameraOverrideStats)
+        if target_trace:
+            if stats.record_count > 32 or any(s.depth > 12 or s.count > 8 for s in stats.records[:stats.record_count]):
+                raise RuntimeError("invalid target trace bounds")
+            return {"schema_version": 1, "observational_only": True, "runtime_started": False,
+                    **{name: getattr(stats, name) for name, _ in TargetTrace._fields_ if name not in ("size", "abi", "records", "reserved")},
+                    "records": [{"count": s.count, "contiguous": bool(s.contiguous), "known_mask": s.known_mask,
+                                 "executable_return_rvas": [f"0x{x:x}" for x in s.rvas[:s.depth]],
+                                 "views": [{name: getattr(v, name) for name, _ in TargetView._fields_}
+                                           if s.known_mask & (1 << i) else None for i, v in enumerate(s.views[:s.count])]}
+                                for s in stats.records[:stats.record_count]]}
         if render_trace:
             if stats.record_count > 64 or any(s.depth > 24 for s in stats.records[:stats.record_count]):
                 raise RuntimeError("invalid render trace bounds")
@@ -264,6 +291,7 @@ def main():
     parser.add_argument("--dll", type=Path)
     parser.add_argument("--stats-only", action="store_true")
     parser.add_argument("--render-trace", action="store_true", help="Read the already initialized capture module's recording stacks")
+    parser.add_argument("--target-trace", action="store_true", help="Read observed RTV resource descriptions and binding call stacks")
     parser.add_argument("--world-render", action="store_true", help="Observe the audited scene render boundary without changing its arguments")
     parser.add_argument("--reset-trace", action="store_true", help="Rearm the capture trace window for the current scene")
     parser.add_argument("--camera-test", type=float, nargs=3, metavar=("X", "Y", "Z"), help="Apply a synthetic eye offset in metres for <=10 seconds, only in development")
@@ -274,6 +302,9 @@ def main():
     parser.add_argument("--override-stats", action="store_true")
     args = parser.parse_args()
     try:
+        if args.target_trace and args.render_trace:
+            raise ValueError("Select target trace or recording trace")
+        args.render_trace = args.render_trace or args.target_trace
         if args.reset_trace and not args.render_trace:
             raise ValueError("--reset-trace requires --render-trace")
         if args.world_render and args.render_trace:
@@ -288,7 +319,7 @@ def main():
             raise ValueError("Override stats are a separate diagnostic mode")
         dll = args.dll or REPO / "build/native/Release" / ("tdvr_capture.dll" if args.render_trace else "tdvr_engine_probe.dll")
         print(json.dumps(probe(args.pid, dll, not (args.stats_only or args.render_trace or args.override_stats), args.render_trace,
-                               args.reset_trace, args.world_render, camera_test, args.override_stats), indent=2, allow_nan=False))
+                               args.reset_trace, args.world_render, camera_test, args.override_stats, args.target_trace), indent=2, allow_nan=False))
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({"error": str(error), "runtime_started": False}))

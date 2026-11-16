@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "tdvr_render_trace.h"
+#include "tdvr_target_trace.h"
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <MinHook.h>
@@ -129,6 +130,7 @@ HRESULT tdvr_trace_queue(ID3D12CommandQueue* queue) noexcept {
             if (install(table[13], reinterpret_cast<void*>(indexed), s.indexed)) s.report.hook_mask |= 2;
             if (install(table[14], reinterpret_cast<void*>(dispatch), s.dispatch)) s.report.hook_mask |= 4;
             if (s.report.hook_mask != 7) hr = HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+            if (SUCCEEDED(hr)) hr = tdvr_trace_targets(device.Get(), list.Get());
         }
     }
     s.report.last_hresult = hr;

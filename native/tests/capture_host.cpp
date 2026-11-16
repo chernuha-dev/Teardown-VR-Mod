@@ -1,5 +1,6 @@
 #include "tdvr_capture.h"
 #include "tdvr_render_trace.h"
+#include "tdvr_target_trace.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
@@ -68,6 +69,9 @@ int main(int argc, char** argv) {
     require(argc == 1 || legacy || trace, "usage: tdvr_capture_host [--legacy|--trace]");
 #ifndef TDVR_EXTERNALLY_LOADED
     TdvrRenderTrace snapshot{};
+    TdvrTargetTrace targets{};
+    require(TdvrGetTargetTrace(&targets) == E_INVALIDARG, "bad target ABI accepted");
+    require(TdvrResetTargetTrace(nullptr) == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "inactive target reset accepted");
     require(TdvrGetRenderTrace(&snapshot) == E_INVALIDARG, "bad trace ABI accepted");
     require(TdvrResetRenderTrace(nullptr) == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "unconfigured trace reset accepted");
     if (trace) check(TdvrEnableRenderTrace(nullptr), "enable render tracing");
@@ -126,7 +130,7 @@ int main(int argc, char** argv) {
     ComPtr<ID3D12GraphicsCommandList> list;
     ComPtr<ID3D12DescriptorHeap> heap;
     ComPtr<ID3D12Fence> fence;
-    D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.NumDescriptors = 1; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.NumDescriptors = 2; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
     check(device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap)), "rtv heap");
     check(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)), "allocator");
     check(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&list)), "list");
@@ -151,6 +155,21 @@ int main(int argc, char** argv) {
         list->ResourceBarrier(1, &barrier);
         const float red[]{1,0,0,1}, g[]{0,1,0,1};
 #ifndef TDVR_EXTERNALLY_LOADED
+        // Runtime count prevents unrolling into different caller RVAs: repeat
+        // the SAME binding call sites to exercise descriptor-write coalescing.
+        if (scene) for (int repeat = 0; repeat < argc; ++repeat) {
+            const auto stride = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+            const D3D12_CPU_DESCRIPTOR_HANDLE other{rtv.ptr+stride};
+            device->CreateRenderTargetView(buffer.Get(), nullptr, other);
+            device->CopyDescriptorsSimple(1, other, rtv, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+            list->OMSetRenderTargets(2, &rtv, TRUE, nullptr); // copied destination must be unknown
+            device->CreateRenderTargetView(buffer.Get(), nullptr, other);
+            const D3D12_CPU_DESCRIPTOR_HANDLE reversed[]{other, rtv};
+            list->OMSetRenderTargets(2, reversed, FALSE, nullptr);
+            device->CopyDescriptors(1, &rtv, nullptr, 1, &other, nullptr, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+            list->OMSetRenderTargets(1, &rtv, FALSE, nullptr); // range copy invalidates old metadata
+            device->CreateRenderTargetView(buffer.Get(), nullptr, rtv);
+        }
         if (scene) scene->render(list.Get(), rtv, static_cast<UINT>(buffer->GetDesc().Width), buffer->GetDesc().Height, green ? g : red);
         else
 #endif
@@ -190,7 +209,29 @@ int main(int argc, char** argv) {
 #ifndef TDVR_EXTERNALLY_LOADED
     snapshot.size = sizeof(snapshot); snapshot.abi = 1;
     check(TdvrGetRenderTrace(&snapshot), "render trace snapshot");
+    targets.size = sizeof(targets); targets.abi = 1;
+    check(TdvrGetTargetTrace(&targets), "target trace snapshot");
     if (trace) {
+        std::cerr << "target stats: mask=" << targets.hook_mask << " bindings=" << targets.bindings
+            << " writes=" << targets.descriptor_writes << " records=" << targets.record_count << " dropped=" << targets.dropped << '\n';
+        require(targets.hook_mask == 15 && targets.bindings == 21 && targets.descriptor_writes == 21
+            && targets.record_count == 12 && targets.dropped == 0, "target bindings missing or descriptor rewrites filled records");
+        for (uint32_t i = 0; i < targets.record_count; ++i) {
+            const auto& entry = targets.records[i];
+            const auto pass = i%4;
+            require(entry.depth > 0 && entry.depth <= 12, "target caller absent");
+            require(entry.count == (pass < 2 ? 2u : 1u)
+                && entry.contiguous == (pass == 0 ? 1u : 0u)
+                && entry.known_mask == (pass == 0 ? 1u : pass == 1 ? 3u : pass == 2 ? 0u : 1u),
+                "descriptor copy invalidation or contiguous/array binding mismatch");
+            for (uint32_t eye = 0; eye < entry.count; ++eye) if (entry.known_mask & (1u << eye)) {
+                const auto& view = entry.views[eye];
+                require(view.creation && view.width == (i < 8 ? 19u : 23u) && view.height == (i < 8 ? 11u : 17u)
+                    && view.resource_format == DXGI_FORMAT_R8G8B8A8_UNORM && view.samples == 1
+                    && view.dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D, "target shape stale after resize");
+            }
+            if (pass == 1) require(entry.views[0].creation > entry.views[1].creation, "array ordering lost");
+        }
         require(snapshot.hook_mask == 7 && snapshot.commands == 9 && snapshot.dropped == 0
             && snapshot.stack_samples == 9 && snapshot.record_count >= 3, "GPU recording calls not traced");
         uint32_t kinds = 0;
@@ -205,7 +246,12 @@ int main(int argc, char** argv) {
         check(TdvrGetRenderTrace(&snapshot), "reset trace stats");
         require(snapshot.commands == 0 && snapshot.record_count == 0 && snapshot.hook_mask == 7
             && snapshot.generation == 1, "trace reset lost hooks or kept stale records");
-    } else require(snapshot.commands == 0 && snapshot.hook_mask == 0, "tracing enabled without opt in");
+        check(TdvrResetTargetTrace(nullptr), "reset target trace");
+        check(TdvrGetTargetTrace(&targets), "reset target snapshot");
+        require(targets.bindings == 0 && targets.record_count == 0 && targets.hook_mask == 15
+            && targets.descriptor_writes == 21, "target reset lost descriptor identities");
+    } else require(snapshot.commands == 0 && snapshot.hook_mask == 0 && targets.bindings == 0
+        && targets.hook_mask == 0, "tracing enabled without opt in");
 #endif
     CloseHandle(event);
     swapchain.Reset();

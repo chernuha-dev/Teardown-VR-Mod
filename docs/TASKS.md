@@ -97,6 +97,19 @@ CTest 14/14, Python 9/9. Это один synthetic view, без XR tracking/subm
 Инструмент на изображении остаётся в исходном мире; это не рабочая VR-рука.
 Независимые GPU targets/histories и настоящее стерео ещё не реализованы.
 
+DEV-004/005: добавлено opt-in наблюдение D3D12 RTV bindings и полных resource
+descriptions с ограниченными EXE stacks. Desktop-процесс подтвердил все четыре
+hooks (mask 15, HRESULT 0), MRT formats 29/31/28/34 размером 3440×1440 внутри
+world-render. Обнаруженное частое переписывание descriptors потребовало
+группировки по shape/caller без write serial; эта доработка пока проверена
+только WARP, не перезагружалась в игру. WARP проверяет обе формы MRT, порядок,
+descriptor copy invalidation, повторные записи, resize и неизменные пиксели.
+Подробности/лимиты — CAPTURE.md. Это диагностика для выбора eye targets,
+не GPU ownership, изоляция histories, stereo replay или OpenXR submit.
+После пользовательского Escape управление окнами прекращено; дальнейшие
+проверки этого среза выполняются без UI и шлема. Итог после исправления
+группировки: CTest 14/14, Python 9/9; готового VR-рендера ещё нет.
+
 Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
 D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;
 статические OpenGL imports не доказывают активный OpenGL. Следующий практический

@@ -172,3 +172,13 @@ target layout и per-eye temporal isolation по-прежнему не подт�
 и 6 на вилле. Нельзя объявлять gameplay только по main-camera pointer.
 Пока нет stereo replay, eye targets, GPU/history isolation и XR submit;
 перенос камеры не переносит инструмент/контроллеры и не подтверждает комфорт.
+
+RTV observer подтвердил D3D12 OMSetRenderTargets return 0x5ac513. Сохранённый
+runtime-код показывает соответствующий backend entry 0x5ac070: сохраняет
+target/attachment в renderer+0xd50/+0xd60, берёт размеры из target+0/+4,
+число color attachments из target+0x30, pointers из +0x38+index*8,
+depth pointer из +0x78. Для texture wrapper поле +0x38 передаётся как
+ID3D12Resource* в CreateRTV, затем barrier и ClearRenderTargetView.
+Это вывод из потока инструкций, не контракт для самостоятельного владения
+ресурсами: layout ещё не проверялся typed hook/COM identity/readback, нельзя
+подменять по нему объекты или повторять world render без дальнейшей проверки.
