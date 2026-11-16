@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <stdexcept>
 
 namespace {
 void require(bool ok, const char* message) {
@@ -96,6 +97,16 @@ XrResult XRAPI_PTR proc(XrInstance, const char* name, PFN_xrVoidFunction* out) {
 }
 const tdvr::OpenXrDispatch api{extensions, create, destroy, properties, system, system_properties,
                               configurations, sizes, proc};
+XrResult ready(XrInstance value, XrSystemId id, const tdvr::OpenXrProbeReport& report, void* context) {
+    require(value == instance && id == 7 && report.adapter_luid.LowPart == 123
+        && fake.requirement_calls == 1 && fake.destroys == 0,
+        "callback did not run between graphics requirements and instance destruction");
+    ++*static_cast<unsigned*>(context);
+    return XR_ERROR_GRAPHICS_DEVICE_INVALID;
+}
+XrResult throwing_ready(XrInstance, XrSystemId, const tdvr::OpenXrProbeReport&, void*) {
+    throw std::runtime_error("callback failure");
+}
 }
 int main() {
     auto result = tdvr::probe_openxr(api);
@@ -146,5 +157,19 @@ int main() {
     auto incomplete = api; incomplete.get_proc = nullptr;
     result = tdvr::probe_openxr(incomplete);
     require(result.status == tdvr::ProbeStatus::error, "incomplete dispatch accepted");
+    fake = {}; unsigned calls = 0;
+    result = tdvr::probe_openxr(api, ready, &calls);
+    require(calls == 1 && result.result == XR_ERROR_GRAPHICS_DEVICE_INVALID
+        && fake.destroys == 1, "callback error lost or instance leaked");
+    fake = {}; fake.system = XR_ERROR_FORM_FACTOR_UNAVAILABLE;
+    result = tdvr::probe_openxr(api, ready, &calls);
+    require(calls == 1 && fake.destroys == 1, "callback reached without system/requirements");
+    fake = {};
+    try {
+        tdvr::probe_openxr(api, throwing_ready);
+        require(false, "throwing callback did not throw");
+    } catch (const std::runtime_error&) {
+        require(fake.destroys == 1, "exception leaked OpenXR instance");
+    }
     std::cout << "OpenXR preflight success/failure/cleanup checks passed with a fake API; no runtime loaded.\n";
 }

@@ -37,7 +37,7 @@ XrResult enumerate(std::vector<T>& out, const T& initial, Enumerate call) {
 }
 }
 
-OpenXrProbeReport probe_openxr(const OpenXrDispatch& api) {
+OpenXrProbeReport probe_openxr(const OpenXrDispatch& api, OpenXrReadyCallback ready, void* context) {
     OpenXrProbeReport out;
     InstanceGuard owner{api};
     auto& instance = owner.handle;
@@ -136,6 +136,10 @@ OpenXrProbeReport probe_openxr(const OpenXrDispatch& api) {
     if (r != XR_SUCCESS) return finish(r, "xrGetD3D12GraphicsRequirementsKHR");
     out.adapter_luid = requirements.adapterLuid;
     out.minimum_feature_level = requirements.minFeatureLevel;
+    if (ready) {
+        r = ready(instance, system, out, context);
+        return finish(r, "D3D12 requirements queried; session callback completed (no frame submission)");
+    }
     return finish(XR_SUCCESS, "D3D12 requirements queried; no session or frames submitted");
 }
 }

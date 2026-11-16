@@ -89,7 +89,7 @@ RowPitch=256. Это проверка операций GPU, а не рендер
 выбирает точно этот адаптер, без подмены WARP/другой видеокартой. Instance
 освобождается и при промежуточных ошибках. Коды: 0 — preflight/GPU проверка
 успешна, 2 — runtime/HMD/возможность недоступны, 1 — ошибка. Код 0 не означает
-готовность игрового VR. Session, spaces, swapchains и frame submission отсутствуют.
+готовность игрового VR. Режим `--runtime` не создаёт session/swapchains.
 
 Фактически проверено: SteamVR/OpenXR 2.18.4, HMD system `oculus`, требование
 FL 12_0; RX 6900 XT поддерживает FL 12_2 и проходит readback. Рекомендованные
@@ -122,3 +122,32 @@ Tracking origin задаётся явно: нельзя повторно при�
 [OpenXR D3D12 requirements](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrGetD3D12GraphicsRequirementsKHR.html),
 [copy footprints](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device-getcopyablefootprints),
 [RemoveDevice](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device5-removedevice).
+
+## Проверка выделения session/swapchains
+
+`tdvr_diagnostic.exe --session` — отдельная **ручная runtime-проверка**,
+не входящая в CTest. Не запускать, когда пользователь занят другим VR-приложением
+или попросил тестировать без обращения к шлему. Обычная сборка и fake XR тесты
+не вызывают OpenXR runtime.
+
+После graphics requirements callback сохраняет instance/system живыми,
+создаёт D3D12 device на точном LUID и DIRECT queue, передаёт binding в
+xrCreateSession. Из runtime formats выбирается RGBA8 sRGB (либо UNORM),
+затем создаются две независимые swapchain 64×64, sampleCount=1. Перечисляются
+ненулевые D3D12 image pointers, затем освобождаются обе swapchain, session
+и instance в обратном порядке. BeginSession, acquire/wait/release images,
+locate views, кадры и GPU-запись в runtime images этим режимом не вызываются.
+
+Фактический единичный запуск 2026-11-16 успел закончиться при поступлении
+пользовательского запрета runtime-проверок: SteamVR/OpenXR 2.18.4, format 29,
+по 3 image на глаз, два успешных destroy swapchain и destroy session/instance.
+Кадры не отправлялись. После запрета выполнялись только локальные проверки.
+Это подтверждает выделение ресурсов стенда, не игровое VR и не комфорт.
+
+Fake session tests проверяют D3D12 binding, порядок lifetime, форматы,
+ошибку создания правого глаза, null/duplicate handles/images, ограничения
+enumeration и ошибки cleanup. Callback test также проверяет освобождение
+instance при исключении и отсутствие callback до graphics requirements.
+
+API: [xrCreateSession](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrCreateSession.html),
+[xrCreateSwapchain](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrCreateSwapchain.html).

@@ -33,7 +33,8 @@ python -m unittest discover -s tests -v
 Исходники оригинальной dxgi.dll не найдены в публичных ветках/релизах автора.
 Собственное ядро собирается как tdvr_math.dll: математика и CPU stereo packet.
 Отдельный tdvr_diagnostic.exe проверяет OpenXR requirements и D3D12 GPU readback;
-session, DXGI-перехват и игровой VR-рендер ещё не реализованы.
+Режим `--session` создаёт и закрывает idle session с двумя тестовыми swapchain.
+DXGI-перехват и игровой VR-рендер ещё не реализованы.
 Ядро не заменяет vendor/v0.22/dxgi.dll. Статическая диагностика движка и
 ограничения выбора backend описаны в docs/ENGINE_COMPATIBILITY.md.
 Первоначальные SHA-256 сохранены; Verify-Baseline.ps1 теперь ожидаемо отмечает

@@ -31,5 +31,9 @@ struct OpenXrProbeReport {
     D3D_FEATURE_LEVEL minimum_feature_level = D3D_FEATURE_LEVEL_11_0;
     std::array<XrViewConfigurationView, 2> views{};
 };
-OpenXrProbeReport probe_openxr(const OpenXrDispatch& api);
+// Optional work while instance/system are alive, after graphics requirements.
+// The callback must destroy its session/children before returning or throwing.
+using OpenXrReadyCallback = XrResult (*)(XrInstance, XrSystemId, const OpenXrProbeReport&, void*);
+OpenXrProbeReport probe_openxr(const OpenXrDispatch& api,
+    OpenXrReadyCallback ready = nullptr, void* context = nullptr);
 }

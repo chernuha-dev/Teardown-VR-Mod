@@ -17,13 +17,19 @@ readback двух независимых targets. CTest 4/4, Python 8/8; WARP, R
 реальный SteamVR/OpenXR 2.18.4 preflight прошли без пользовательского теста
 в шлеме. Добавлен owned stereo packet с общим simulation id/time и отдельными
 view/projection (коммит f8f64d2); это CPU-контракт, не синхронизация игрового рендера.
-DEV-004 остаётся открытой: session/swapchain/frame loop и engine hooks отсутствуют.
+DEV-004 остаётся открытой: игровой render hook и работающий frame loop отсутствуют.
+Последующий срез добавил ручной `--session`: idle session и две swapchain
+64×64 создаются на runtime-required D3D12 adapter и освобождаются. Один запуск
+SteamVR/OpenXR подтвердил по 3 image на глаз, format 29, без кадров; затем
+пользователь запретил обращения к шлему на время Roblox, runtime больше не запускать.
+Fake session allocation/cleanup и callback exception tests проходят без runtime.
 
-Следующий практический этап: подтвердить активный graphics backend Teardown
-на наблюдаемом EXE (статические imports указывают на OpenGL/SwapBuffers), затем
-выбрать проверяемый перехват и путь передачи изображения в OpenXR. Не строить
-игровой D3D12 hook только по наличию dxgi.dll. Отдельный D3D12 стенд остаётся
-проверкой своего backend; подробности — BUILD.md и ENGINE_COMPATIBILITY.md.
+Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
+D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;
+статические OpenGL imports не доказывают активный OpenGL. Следующий практический
+этап: frame lifecycle и проверяемый перехват игрового D3D12 render path.
+Наличие dxgi.dll или успешного отдельного стенда не доказывает hooks.
+Подробности — BUILD.md и ENGINE_COMPATIBILITY.md.
 
 ## P1 — правильная картинка и трекинг
 
