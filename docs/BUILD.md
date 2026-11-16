@@ -482,3 +482,17 @@ copy timeout и cleanup открытого frame. Обычный capture host п
 Python 16/16; launcher дополнительно отклоняет --xr-world-timing без profile
 до чтения EXE/создания дочернего процесса (exit 1). Ни одна проверка нового
 режима не запускала настоящую игру/runtime/шлем.
+
+
+### Offline temporal compatibility audit
+
+```powershell
+python scripts/Inspect-TemporalCompatibility.py --game local/game-dev/game/teardown.exe --snapshot local/engine-audit/runtime-text.bin --reference local/reference/v1.1.0/dsound.dll
+```
+
+Только чтение трёх файлов с известными полными SHA; процесс игры не открывается.
+Скрипт выдаёт JSON в stdout и ничего не пишет. Исходные файлы не входят в Git.
+Реальные сохранённые файлы прошли аудит: world offsets 0x43/0x293/0x36d,
+TAA create 0xa41a0, три release CALL → 0x5dde10, buffer release 0x5bd420.
+Это адреса-кандидаты для дальнейшего анализа ABI, не разрешение вызывать их.
+Подробности resource contract reference DLL — V110_COMPATIBILITY.md.

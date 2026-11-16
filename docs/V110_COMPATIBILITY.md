@@ -71,3 +71,47 @@ per-eye history также недоступен. Сообщение `synchronise
 Автоматически проверено: 12 Python tests, включая отказы patcher при неизвестных
 hash/bytes/RVA, выходе за local/ и существующем output; native CTest 15/15,
 включая отдельный profile-only child без XR и graphics capture.
+
+## REA: temporal history и текущий компилятор
+
+Продолжение 2026-11-17, без нового запуска игры. REA dossiers:
+
+- detector RVA 0x74470: `ev_829312bf3d34535eb68b905f285c72bcc5928c9b16815e0e256b7cc280c1a547`;
+- history hook RVA 0x6d2d0: `ev_ff055cf881cd185c6e40f9a3bcdc4b83499d0a23482823c4e37cf9debe8f22c7`;
+- resource helper RVA 0x6a610: `ev_23833c14bcfa8ca4828c51ab1b4de67e2e89c8b37e77c4e6fa3a71f9c431eb76`.
+
+Detector требует точных позиций трёх блоков относительно world render:
+
+| Блок | Требует DLL | В сохранённом коде игры | Дополнительное различие |
+|---|---:|---:|---|
+| serial/history swap | +0x50 | +0x43 | другое распределение регистров |
+| previous matrix copy | +0x299 | +0x293 | тот же шаблон по другому адресу |
+| TAA call / previous camera | +0x373 | +0x36d | R13 вместо RBX для temporary pointer |
+
+Проверка reset flag по scene+0x23f1 также использует другую форму инструкции
+(не тот register-based byte compare, которого требует DLL). Это доказывает
+несовпадение guard с этой сборкой; не доказывает безопасность его отключения.
+
+По REA resource helper недостаточно сохранить две CPU-матрицы. Для
+переключаемого eye bank helper поддерживает 10 engine buffers; создаёт их
+при отсутствии или различии descriptor prefix (0x38 bytes):
+scene+0xa50/a58, aa8/ab0, ac0/ac8, ae0/ae8, af8/b00. Дополнительно выделяются
+пять объектов TAA (scene+0xa30, поля +0x50/58/60/68/70). Helper сравнивает
+descriptors/размеры, ждёт renderer idle при замене и пользуется engine-specific
+allocator/destructor. Hook отдельно хранит history indices, previous matrices,
+часть camera state и TAA counter; переключает dirty/reset между глазами.
+Один bank этих полей — 0x108 bytes. Это факты реализации reference DLL,
+не проверенный layout/ownership контракт для нашего engine backend.
+
+Новый read-only scripts/Inspect-TemporalCompatibility.py требует те же полные
+SHA игры/snapshot/reference, сверяет таблицу 10 fields в DLL и находит блоки
+в сохранённом runtime .text. Он разрешает CALL rel32 и проверяет, что три
+release call внутри TAA create ведут в один target. Получены кандидаты игры:
+TAA frame 0xa3e60, TAA create 0xa41a0, TAA release 0x5dde10,
+buffer release 0x5bd420. ABI, resource states, allocator ownership и lifecycle
+в игре этим не проверены. Скрипт ничего не патчит/запускает и всегда сообщает
+stereo_replay_enabled=false. Сырой REA output и файлы игры остаются под local/.
+
+Проверки нового аудитора: Python unittest 21/21, включая неизвестные SHA всех
+трёх входов, неоднозначные/перекрывающиеся patterns, signed rel32 и границы.
+Нативный код этим срезом не изменялся; предыдущий CTest 18/18.

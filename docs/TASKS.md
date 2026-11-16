@@ -222,6 +222,17 @@ split lifecycle, duplicate/no-render/stop/error/cleanup; runtime/game прове
 ограничения — BUILD.md. Проверки: CTest 18/18, Python 16/16, launcher
 отвергает отсутствие profile до создания процесса. VR-102 остаётся открытой.
 
+DEV-005/VR-102: REA resource helper выявил 10 scene history buffers и 5 TAA
+objects на глаз, descriptor comparison и idle-before-replace. Разбор snapshot
+подтвердил три несовпадающих guard offsets/register forms. Добавлен read-only
+Inspect-TemporalCompatibility.py с полными SHA gates, уникальностью patterns
+(включая overlap) и проверкой rel32. На настоящих сохранённых файлах найдены
+TAA create/release/frame и buffer-release candidates; никаких patches/hooks
+или новых игровых запусков. Результаты/REA evidence — V110_COMPATIBILITY.md.
+Allocator ABI/ownership/GPU states ещё не проверены: replay остаётся выключен.
+Проверка аудитора на pinned файлах и Python 21/21 прошли; native в этом срезе
+не менялся (последний CTest 18/18).
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).
