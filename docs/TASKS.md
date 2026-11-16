@@ -138,6 +138,18 @@ D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий 
 Наличие dxgi.dll или успешного отдельного стенда не доказывает hooks.
 Подробности — BUILD.md и ENGINE_COMPATIBILITY.md.
 
+DEV-005/HAND-203, 2026-11-17: REA/Ghidra установил конкретное несовпадение
+сканера player link в v1.1.0 с имеющимся EXE. Hash-gated patcher меняет два
+immediate в отдельной DLL под local/. Изолированная игра подтвердила hook
++0x447520, offsets 58/9f4/82c/a20; name 0/0. Вращение инструмента ещё не проверено.
+Собственные capture hooks рядом с авторской DLL не запустились; добавлен
+profile-only launcher без graphics hooks. OpenXR instance отказал -51, кадров
+в шлем нет; вероятна недоступность OpenVR path registry в отдельном AppData,
+это пока гипотеза. Mode 2 и per-eye history авторского мода недоступны на этой
+игре. Проверки: CTest 15/15, Python 12/12. UI остановлен после Escape.
+Подробности и REA evidence — V110_COMPATIBILITY.md. DEV-004/005 и HAND-203
+остаются открыты; собственный XR renderer ещё не подключён.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).
