@@ -275,3 +275,54 @@ WARP-only run честно выводит cross-device rejection=0 (этот с�
 `build/native/Release/tdvr_d3d12_tests.exe --hardware` на RX 6900 XT:
 221 pixels per eye, row pitch 256, cross-device rejection=1. Ни один из этих
 запусков не создаёт OpenXR session и не управляет игровым окном.
+
+## Opt-in плоская OpenXR-панель
+
+Собственная `tdvr_capture.dll` теперь содержит OpenXR loader и `tdvr_xr_panel`.
+Загрузка DLL и обычные CTest не вызывают runtime. Только явный `--xr-panel`
+в launcher включает XR на первом подходящем игровом Present:
+
+```powershell
+build/native-trace/Release/tdvr_capture_launcher.exe <development-exe> <absolute-tdvr_capture.dll> <development-profile> --xr-panel
+```
+
+Это ручной режим с обращением к шлему. Не запускать рядом с Roblox или другим
+VR-приложением и не совмещать с dsound/dxgi proxy. Для собственной проверки
+development-копия должна содержать только наш capture module, без авторской DLL.
+Живая установка не является целью этой команды. Не запускалось после Escape.
+
+Путь: текущий backbuffer / PRESENT на известной DIRECT queue → собственный
+command list → exact-format copy в XR color image → восстановление PRESENT /
+RENDER_TARGET → submit на той же queue → CPU fence wait → XR release → EndFrame
+с одним quad для обоих глаз. Нет масштабирования или gamma conversion.
+XR binding использует игровой device/queue и требует совпадения runtime LUID
+и feature level. LOCAL space, панель шириной 3 м на расстоянии 2.5 м, высота
+по aspect ratio источника. Это одна плоская текстура, не независимые глаза,
+не head/controller tracking в игре и не синхронный stereo world-render.
+
+Обрабатываются READY/STOPPING/EXITING/LOSS_PENDING, shouldRender=false,
+XR_FRAME_DISCARDED. Ожидание image ограничено 5 ms, GPU fence — 2 секундами.
+При timeout/ошибке панель прекращает новые кадры; незавершённые GPU allocations,
+source reference и XR handles удерживаются до конца процесса. RemoveDevice
+не вызывается. Обычный game Present сохраняется. Resize/смена queue требуют
+нового запуска этого диагностического режима; автоматического recovery пока нет.
+xrWaitFrame остаётся синхронным runtime-вызовом на Present thread.
+
+`TdvrGetPanelStats` (size/ABI=1) сообщает stage, frames/submitted, XR/HRESULT,
+quarantine; launcher печатает изменения стадии и каждые 60 submissions.
+Stage: 0 idle, 1 init, 2 events, 3 frame, 4 copy, 5 submit, 6 stopped, 7 failed.
+Успешный submission не равен визуальной проверке в шлеме.
+
+CTest `openxr_flat_panel_fake_warp` не линкует loader. Подменённый XR проверяет
+binding/точные format и extent, кадры, shouldRender=false, STOPPING/EXITING,
+отказ runtime/LUID/format, timeout, неверный image index, EndFrame failure,
+resize, ошибку cleanup и отсутствие автоматического повтора. WARP выполняет
+настоящую копию 19×11 и readback всех 209 пикселей на границе fake release.
+Это проверка копирования и порядка вызовов; она не моделирует очередь compositor
+или зависание физического GPU. Обычные capture hosts дополнительно проверяют
+нулевые panel stats по умолчанию, ABI и запрет позднего включения XR.
+
+Фактически: сборка build/native-trace, CTest 16/16, Python 12/12.
+Новый режим ещё не запускался с реальным runtime/игрой/шлемом.
+Правило resource states:
+[Khronos D3D12 swapchain state](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XR_KHR_D3D12_enable-swapchain-image-state.html).

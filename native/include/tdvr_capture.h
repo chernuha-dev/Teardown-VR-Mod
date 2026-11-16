@@ -20,10 +20,19 @@ struct TdvrCaptureStats {
     uint32_t width, height;
     int32_t last_hresult;
 };
+struct TdvrPanelStats {
+    uint32_t size, abi, enabled, stage;
+    uint64_t frames, submitted;
+    int32_t xr_result, gpu_result;
+    uint32_t quarantined, reserved;
+};
 extern "C" {
 // Startup on a normal application thread BEFORE creating DXGI factories. No DllMain work.
 // Process lifetime only: the module pins itself; unloading hooked code is forbidden.
 TDVR_CAPTURE_API HRESULT WINAPI TdvrStartCapture();
+// Opt-in before startup. This enables a FLAT quad, not stereo game rendering.
+TDVR_CAPTURE_API HRESULT WINAPI TdvrEnableXrPanel();
+TDVR_CAPTURE_API HRESULT WINAPI TdvrGetPanelStats(TdvrPanelStats* stats);
 // Optional development profile, configured before startup. Redirects this child's
 // AppData/Documents queries and environment; never changes the user's folders.
 TDVR_CAPTURE_API HRESULT WINAPI TdvrConfigureDevelopmentProfile(const wchar_t* root);

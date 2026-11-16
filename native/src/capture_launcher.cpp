@@ -85,11 +85,12 @@ int wmain(int argc, wchar_t** argv) {
         // This launcher never attaches to an existing process or the user's VR app.
         const bool trace = argc >= 4 && std::wstring(argv[argc-1]) == L"--trace";
         const bool profile_only = argc >= 4 && std::wstring(argv[argc-1]) == L"--profile-only";
-        const int positional = argc - ((trace || profile_only) ? 1 : 0);
+        const bool xr_panel = argc >= 4 && std::wstring(argv[argc-1]) == L"--xr-panel";
+        const int positional = argc - ((trace || profile_only || xr_panel) ? 1 : 0);
         if (profile_only && positional != 4) throw std::runtime_error("--profile-only requires a development profile");
         if (positional != 3 && positional != 4) {
-            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile] [--trace|--profile-only]\n"
-                << "Own capture has no XR output. Profile-only leaves rendering to the child and its installed modules.\n";
+            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile] [--trace|--profile-only|--xr-panel]\n"
+                << "XR panel is an opt-in FLAT game screen, not stereo VR. Profile-only leaves rendering to child modules.\n";
             return argc == 1 ? 0 : 2;
         }
         const auto exe = std::filesystem::canonical(argv[1]);
@@ -105,13 +106,17 @@ int wmain(int argc, wchar_t** argv) {
         const auto getstats = GetProcAddress(local, "TdvrGetCaptureStats");
         const auto configure = GetProcAddress(local, "TdvrConfigureDevelopmentProfile");
         const auto start_profile = GetProcAddress(local, "TdvrStartDevelopmentProfile");
+        const auto enable_panel = GetProcAddress(local, "TdvrEnableXrPanel");
+        const auto get_panel = GetProcAddress(local, "TdvrGetPanelStats");
         const auto enable_trace = GetProcAddress(local, "TdvrEnableRenderTrace");
         const auto get_trace = GetProcAddress(local, "TdvrGetRenderTrace");
-        if (!start || !getstats || !configure || !start_profile || !enable_trace || !get_trace) { FreeLibrary(local); throw std::runtime_error("capture exports missing"); }
+        if (!start || !getstats || !configure || !start_profile || !enable_panel || !get_panel || !enable_trace || !get_trace) { FreeLibrary(local); throw std::runtime_error("capture exports missing"); }
         const auto start_rva = reinterpret_cast<uintptr_t>(start) - reinterpret_cast<uintptr_t>(local);
         const auto stats_rva = reinterpret_cast<uintptr_t>(getstats) - reinterpret_cast<uintptr_t>(local);
         const auto configure_rva = reinterpret_cast<uintptr_t>(configure) - reinterpret_cast<uintptr_t>(local);
         const auto profile_rva = reinterpret_cast<uintptr_t>(start_profile) - reinterpret_cast<uintptr_t>(local);
+        const auto enable_panel_rva = reinterpret_cast<uintptr_t>(enable_panel) - reinterpret_cast<uintptr_t>(local);
+        const auto get_panel_rva = reinterpret_cast<uintptr_t>(get_panel) - reinterpret_cast<uintptr_t>(local);
         const auto enable_trace_rva = reinterpret_cast<uintptr_t>(enable_trace) - reinterpret_cast<uintptr_t>(local);
         const auto get_trace_rva = reinterpret_cast<uintptr_t>(get_trace) - reinterpret_cast<uintptr_t>(local);
         FreeLibrary(local);
@@ -207,6 +212,9 @@ int wmain(int argc, wchar_t** argv) {
             wincheck(VirtualFreeEx(child.info.hProcess, remote_profile, 0, MEM_RELEASE) != FALSE, "free profile path");
             if (FAILED(static_cast<HRESULT>(configured))) throw std::runtime_error("profile configuration failed");
         }
+        if (xr_panel && FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess,
+            remote_dll + enable_panel_rva, nullptr, "enable flat XR panel"))))
+            throw std::runtime_error("XR panel configuration failed");
         if (trace && FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess,
             remote_dll + enable_trace_rva, nullptr, "enable render trace"))))
             throw std::runtime_error("render trace configuration failed");
@@ -232,6 +240,8 @@ int wmain(int argc, wchar_t** argv) {
         uint64_t last_captures = 0;
         uint32_t trace_records = 0, polls = 0;
         uint64_t trace_generation = 0;
+        uint64_t panel_submitted = 0;
+        uint32_t panel_stage = 0;
         for (;;) {
             const DWORD wait = WaitForSingleObject(child.info.hProcess, 100);
             if (wait == WAIT_OBJECT_0) break;
@@ -242,6 +252,20 @@ int wmain(int argc, wchar_t** argv) {
                 const DWORD status = remote_call(child.info.hProcess, remote_dll + stats_rva, stats_buffer);
                 if (FAILED(static_cast<HRESULT>(status))) throw std::runtime_error("remote stats failed");
                 wincheck(ReadProcessMemory(child.info.hProcess, stats_buffer, &stats, sizeof(stats), nullptr) != FALSE, "read stats");
+                if (xr_panel) {
+                    static_assert(sizeof(TdvrPanelStats) <= sizeof(TdvrCaptureStats));
+                    TdvrPanelStats panel{}; panel.size = sizeof(panel); panel.abi = 1;
+                    wincheck(WriteProcessMemory(child.info.hProcess, stats_buffer, &panel, sizeof(panel), nullptr) != FALSE, "initialize panel stats");
+                    if (FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess, remote_dll + get_panel_rva, stats_buffer))))
+                        throw std::runtime_error("panel stats failed");
+                    wincheck(ReadProcessMemory(child.info.hProcess, stats_buffer, &panel, sizeof(panel), nullptr) != FALSE, "read panel stats");
+                    if (panel.stage != panel_stage || panel.submitted >= panel_submitted + 60) {
+                        panel_stage = panel.stage; panel_submitted = panel.submitted;
+                        std::cout << "FLAT XR panel stage=" << panel.stage << " frames=" << panel.frames
+                            << " submitted=" << panel.submitted << " xr=" << panel.xr_result
+                            << " gpu=" << panel.gpu_result << " quarantined=" << panel.quarantined << '\n';
+                    }
+                }
                 if (trace && (++polls % 10 == 0)) {
                     TdvrRenderTrace snapshot{}; snapshot.size = sizeof(snapshot); snapshot.abi = 1;
                     wincheck(WriteProcessMemory(child.info.hProcess, trace_buffer, &snapshot, sizeof(snapshot), nullptr) != FALSE, "initialize trace snapshot");
@@ -274,7 +298,7 @@ int wmain(int argc, wchar_t** argv) {
         child.exited = true;
         DWORD code = 0;
         wincheck(GetExitCodeProcess(child.info.hProcess, &code) != FALSE, "child exit code");
-        std::cout << "capture-only child exit=" << code << "; no XR runtime used\n";
+        std::cout << (xr_panel ? "XR-panel child exit=" : "capture-only child exit=") << code << '\n';
         return static_cast<int>(code);
     } catch (const std::exception& error) {
         std::cerr << "Capture launch failed: " << error.what() << '\n';

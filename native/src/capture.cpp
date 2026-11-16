@@ -1,4 +1,5 @@
 #include "tdvr_capture.h"
+#include "tdvr_xr_panel.h"
 #include "tdvr_render_trace.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -46,6 +47,9 @@ struct State {
     TdvrCaptureStats stats{sizeof(TdvrCaptureStats), 1};
     bool started = false;
     bool profile_only = false;
+    bool panel_enabled = false, panel_busy = false;
+    IDXGISwapChain* panel_owner = nullptr; // observation only, does not retain the swapchain
+    std::unique_ptr<tdvr::XrPanel> panel;
     std::wstring profile;
     FolderPath folder_path = nullptr;
     Factory factory = nullptr, factory1 = nullptr;
@@ -205,7 +209,25 @@ void observe_present(IDXGISwapChain* object, UINT flags) noexcept {
     if (!(flags & DXGI_PRESENT_TEST)) tdvr_trace_present();
     if (flags & DXGI_PRESENT_TEST) return;
     const auto found = s.chains.find(object);
-    if (found == s.chains.end() || found->second.captured || found->second.failed) return;
+    if (found == s.chains.end()) return;
+    if (s.panel_enabled && !s.panel_busy && (!s.panel_owner || s.panel_owner == object)) {
+        s.panel_owner = object;
+        s.panel_busy = true;
+        try {
+            if (!s.panel) s.panel = std::make_unique<tdvr::XrPanel>(tdvr::panel_loader_api());
+            ComPtr<IDXGISwapChain3> current;
+            s.stats.last_hresult = object->QueryInterface(IID_PPV_ARGS(&current));
+            if (SUCCEEDED(s.stats.last_hresult)) {
+                ComPtr<ID3D12Resource> source;
+                s.stats.last_hresult = current->GetBuffer(current->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&source));
+                if (SUCCEEDED(s.stats.last_hresult))
+                    s.panel->present(found->second.queue.Get(), source.Get());
+            }
+        } catch (...) { s.stats.last_hresult = E_FAIL; }
+        s.panel_busy = false;
+        return; // Panel mode never performs the one-shot CPU readback.
+    }
+    if (s.panel_enabled || found->second.captured || found->second.failed) return;
     try {
         s.stats.last_hresult = capture(object, found->second);
         found->second.captured = SUCCEEDED(s.stats.last_hresult);
@@ -351,7 +373,7 @@ HRESULT WINAPI TdvrStartDevelopmentProfile() {
     auto& s = state();
     std::lock_guard<std::recursive_mutex> lock(s.mutex);
     if (s.profile_only) return S_FALSE;
-    if (s.started || s.profile.empty()) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.started || s.panel_enabled || s.profile.empty()) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
         reinterpret_cast<LPCWSTR>(&TdvrStartDevelopmentProfile), &module)) return HRESULT_FROM_WIN32(GetLastError());
@@ -392,5 +414,22 @@ HRESULT WINAPI TdvrGetCaptureStats(TdvrCaptureStats* stats) {
     auto& s = state();
     std::lock_guard<std::recursive_mutex> lock(s.mutex);
     *stats = s.stats;
+    return S_OK;
+}
+HRESULT WINAPI TdvrEnableXrPanel() {
+    auto& s = state();
+    std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    if (s.started || s.profile_only) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.panel_enabled) return S_FALSE;
+    s.panel_enabled = true;
+    return S_OK;
+}
+HRESULT WINAPI TdvrGetPanelStats(TdvrPanelStats* stats) {
+    if (!stats || stats->size != sizeof(TdvrPanelStats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state();
+    std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    const auto panel = s.panel ? s.panel->stats() : tdvr::PanelStats{};
+    *stats = {sizeof(TdvrPanelStats), 1, s.panel_enabled ? 1u : 0u, panel.stage,
+        panel.frames, panel.submitted, panel.xr, panel.gpu, panel.quarantined ? 1u : 0u, 0};
     return S_OK;
 }

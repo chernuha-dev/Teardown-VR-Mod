@@ -20,8 +20,13 @@ using StartCapture = HRESULT (WINAPI*)();
 using GetCaptureStats = HRESULT (WINAPI*)(TdvrCaptureStats*);
 StartCapture externally_started = nullptr;
 GetCaptureStats externally_stats = nullptr;
+using GetPanelStats = HRESULT (WINAPI*)(TdvrPanelStats*);
+GetPanelStats externally_panel = nullptr;
+StartCapture externally_enable_panel = nullptr;
 #define TdvrStartCapture externally_started
 #define TdvrGetCaptureStats externally_stats
+#define TdvrGetPanelStats externally_panel
+#define TdvrEnableXrPanel externally_enable_panel
 #endif
 using Microsoft::WRL::ComPtr;
 void require(bool ok, const char* text) { if (!ok) { std::cerr << text << '\n'; std::exit(1); } }
@@ -49,7 +54,9 @@ int main(int argc, char** argv) {
     require(module != nullptr, "launcher did not load the capture DLL");
     externally_started = reinterpret_cast<StartCapture>(GetProcAddress(module, "TdvrStartCapture"));
     externally_stats = reinterpret_cast<GetCaptureStats>(GetProcAddress(module, "TdvrGetCaptureStats"));
-    require(externally_started && externally_stats, "injected exports missing");
+    externally_panel = reinterpret_cast<GetPanelStats>(GetProcAddress(module, "TdvrGetPanelStats"));
+    externally_enable_panel = reinterpret_cast<StartCapture>(GetProcAddress(module, "TdvrEnableXrPanel"));
+    require(externally_started && externally_stats && externally_panel && externally_enable_panel, "injected exports missing");
     require(TdvrStartCapture() == S_FALSE, "capture was not initialized before child main");
     if (const auto* profile = std::getenv("TDVR_DEV_PROFILE")) {
         char folder[MAX_PATH]{};
@@ -77,8 +84,13 @@ int main(int argc, char** argv) {
     if (trace) check(TdvrEnableRenderTrace(nullptr), "enable render tracing");
 #endif
     TdvrCaptureStats invalid{};
+    TdvrPanelStats panel{};
+    require(TdvrGetPanelStats(&panel) == E_INVALIDARG, "bad panel ABI accepted");
+    panel.size = sizeof(panel); panel.abi = 1;
+    require(TdvrGetPanelStats(&panel) == S_OK && !panel.enabled && !panel.frames && !panel.submitted, "XR panel enabled by default");
     require(TdvrGetCaptureStats(&invalid) == E_INVALIDARG, "bad ABI accepted");
     check(TdvrStartCapture(), "start capture");
+    require(TdvrEnableXrPanel() == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "late XR enable accepted");
     require(TdvrStartCapture() == S_FALSE, "second start must be idempotent");
     ComPtr<IDXGIFactory4> factory;
     if (legacy) check(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory1");

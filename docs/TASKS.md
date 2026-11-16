@@ -150,6 +150,17 @@ profile-only launcher без graphics hooks. OpenXR instance отказал -51,
 Подробности и REA evidence — V110_COMPATIBILITY.md. DEV-004/005 и HAND-203
 остаются открыты; собственный XR renderer ещё не подключён.
 
+DEV-004, собственный путь: добавлен opt-in --xr-panel в capture launcher.
+Первый Present связывает XR с игровыми device/queue; текущий backbuffer копируется
+в exact-format XR swapchain, восстанавливаются resource states, затем fence,
+release и одна quad layer. Реализован session event lifecycle и прекращение
+кадров при ошибке/resize, без RemoveDevice. Это плоская панель, не stereo world
+и не игровые руки. CTest 16/16 (fake XR + реальные WARP copy/readback), Python
+12/12; запуск нового режима на runtime/игре/шлеме после Escape не выполнялся.
+Отдельная v1.1.0 development-копия всё ещё содержит её proxy: перед собственным
+runtime-тестом его нужно отключить с сохранением копии. Смешивание запрещено.
+Параметры, stats и ограничения — BUILD.md. DEV-004/VR-101/102 остаются открыты.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).
