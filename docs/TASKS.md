@@ -264,6 +264,16 @@ textures, поэтому отдельные D3D12 allocations ещё не явл
 CTest 20/20; стерео world, head-camera override и руки пока не подключены.
 DEV-004/005 и VR-101/102/103 остаются открытыми.
 
+DEV-004/VR-103: добавлена калибровка tracking origin относительно текущей
+игровой точки обзора. Середина поз обоих глаз совмещается с game anchor;
+обратная tracking pose учитывает масштаб только для translation, высота HMD
+не прибавляется к игровой повторно. Quaternion midpoint учитывает q/-q.
+CPU tests проверяют yaw и наклон/roll, relative roomscale, разные eye rotations,
+неверные данные и неизменность результата при отказе. Build-Native.ps1
+-BuildDirectory build/native: CTest 20/20; расширенный tracking test также прошёл.
+Это расчёт привязки, пока не live head-camera override; игровой hook должен
+передать гарантированно текущую пару и ограничить срок действия preview.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

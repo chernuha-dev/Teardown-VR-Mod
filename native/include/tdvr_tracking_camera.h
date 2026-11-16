@@ -18,3 +18,10 @@ struct TdvrTrackingCameraContext {
 // Output is untouched on any failure.
 TdvrResult tdvr_prepare_tracked_cameras(const TdvrXrViewSnapshot& views,
     const TdvrTrackingCameraContext& context, TdvrEngineCameraPair* output);
+
+// Calibrate once from a caller-owned current XR pair. Aligns its eye midpoint
+// and quaternion midpoint with the game anchor; subsequent tracking is relative
+// to that origin. Does not add HMD height to the existing game eye height.
+// Caller must check frame freshness before calibration; no game state is changed.
+TdvrResult tdvr_calibrate_tracking_origin(const TdvrXrViewSnapshot& views,
+    const TdvrPose& world_anchor, double world_scale, TdvrPose* output);

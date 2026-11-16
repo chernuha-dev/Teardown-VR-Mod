@@ -590,3 +590,21 @@ CPU tests покрывают depth-only, неверные размеры/count/l
 а не десять ID3D12Resource. Поэтому EyeHistoryResources нельзя напрямую
 подставлять в scene slots: engine wrappers, attachments, TAA objects и lifecycle
 пока не реализованы. Изображение в runtime по-прежнему плоская игровая панель.
+
+### Tracking origin calibration
+
+tdvr_calibrate_tracking_origin принимает owned XR pair, world anchor и scale.
+Вычисляет среднюю позицию глаз и shortest-arc quaternion midpoint, затем
+world_anchor * inverse(scaled_tracking_center). Исходный game anchor — уже
+точка обзора, поэтому HMD height повторно не добавляется. После calibration
+origin сохраняется: его повторное вычисление на каждой позе отменило бы head
+motion. q/-q обрабатываются как одна ориентация; обе eye poses/FOV/flags
+валидируются до публикации результата. Freshness и выбор game anchor остаются
+обязанностью render owner; функция не пишет игровую память и не меняет камеру.
+
+tracked_engine_camera_pair проверяет midpoint в game anchor, начальную
+ориентацию, последующее roomscale со scale=2, arbitrary pitch/yaw/roll со
+scale=.5, antipodal и разные eye orientations, отказ bad anchor/tracking/scale
+без частичной записи. Сборка build/native и CTest 20/20 прошли; дополненный
+tracking test отдельно пересобран и прошёл. Запущенный prototype использует
+предыдущую DLL: новая calibration ещё не подключена к game render hook.
