@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "tdvr_xr_panel.h"
 #include "tdvr_eye_copy.h"
-#include "tdvr_frame.h"
+#include "tdvr_tracking_camera.h"
 #include <wrl/client.h>
 #include <algorithm>
 #include <cstring>
@@ -202,27 +202,23 @@ struct XrPanel::Impl {
         constexpr XrViewStateFlags required = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT
             | XR_VIEW_STATE_ORIENTATION_TRACKED_BIT | XR_VIEW_STATE_POSITION_TRACKED_BIT;
         if ((state.viewStateFlags & required) != required) return;
-        TdvrFrameInput input{};
-        input.frame = {report.frames, display_time}; // XR frame number, not game simulation identity
-        input.world_from_tracking.orientation[3] = 1;
-        input.world_scale = 1; input.near_clip_m = .05; input.far_clip_m = 500;
+        auto candidate = observed;
+        candidate.available = 1;
         for (unsigned eye = 0; eye < 2; ++eye) {
             const auto& p = views[eye].pose; const auto& fov = views[eye].fov;
-            input.eyes[eye] = {input.frame,
-                {{p.position.x, p.position.y, p.position.z}, {p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w}},
-                {fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown},
-                TDVR_ORIENTATION_VALID | TDVR_POSITION_VALID | TDVR_ORIENTATION_TRACKED | TDVR_POSITION_TRACKED};
+            candidate.eyes[eye] = {{p.position.x, p.position.y, p.position.z},
+                {p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w}};
+            candidate.fov[eye] = {fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown};
         }
-        TdvrStereoFrame validated;
-        if (tdvr_build_stereo_frame(&input, &validated) != TDVR_OK) {
+        // Validation-only conversion in tracking coordinates. A real world-render
+        // owner must supply its actual simulation key/origin/clip distances.
+        TdvrTrackingCameraContext context{report.frames, {0, display_time}, {{0,0,0},{0,0,0,1}}, 1, .05, 500};
+        TdvrEngineCameraPair validated;
+        if (tdvr_prepare_tracked_cameras(candidate, context, &validated) != TDVR_OK) {
             observed.sample_result = XR_ERROR_VALIDATION_FAILURE;
             return; // Flat quad remains usable; invalid tracking cannot drive a camera.
         }
-        for (unsigned eye = 0; eye < 2; ++eye) {
-            observed.eyes[eye] = input.eyes[eye].tracking_pose;
-            observed.fov[eye] = input.eyes[eye].fov;
-        }
-        observed.available = 1;
+        observed = candidate;
     }
     void render(ID3D12Resource* source) {
         report.stage = 3;

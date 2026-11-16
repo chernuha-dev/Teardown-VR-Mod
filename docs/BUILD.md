@@ -398,3 +398,37 @@ Present после игрового world render. Для полноценног�
 Python 16/16. Staging unittest теперь подменяет disk_usage и отдельно проверяет
 отказ до создания destination при недостатке места; реальный disk-space gate
 не ослаблен (0ef867e). Новый XR path не запускался в игре или шлеме.
+
+
+### Преобразование located XR pair в камеры движка
+
+Общий tdvr_prepare_tracked_cameras принимает owned TdvrXrViewSnapshot и
+контекст текущего render frame. Контекст отдельно задаёт ожидаемые XR frame id /
+predicted time, настоящую метку simulation, world_from_tracking и clip/scale.
+Adapter не принимает недоступный/ошибочный tracking, другой кадр или timestamp,
+нулевое XR time и неверный ABI. Обе камеры готовятся атомарно, output при отказе
+не меняется. XR frame number не подменяет game simulation id.
+
+Позиции глаз уже включают IPD; преобразование не добавляет его повторно.
+World origin задаётся явно, а не выводится из игровой позиции глаза плюс
+стоящая высота HMD. Adapter сам не реализует recenter, не подтверждает freshness
+на часах, не замораживает игру и не даёт владение render frame. Если вызывающий
+код бездумно скопирует expected id/time из старого snapshot, проверка равенства
+не обнаружит возраст: lifecycle остаётся обязанностью владельца XR-кадра.
+
+XrPanel использует тот же adapter для проверки доступности обеих камер в
+float-формате движка, с identity tracking origin и diagnostic clip distances.
+Результат там не устанавливается в игру. Это validation-only вызов, без
+настоящей simulation identity. Никакой второй render pass этим не запускается.
+Код adapter/engine conversion статически включён в capture DLL; новая зависимость
+на tdvr_math.dll для игрового процесса не добавляется.
+
+CPU test tracked_engine_camera_pair проверяет реальные world points на границе
+frustum для обоих FOV, yaw origin 90° + head 60°, положение/высоту/масштаб 2,
+scaled clips, отдельную simulation key и 13 отказов, включая stale frame/time,
+NaN справа и потерю depth precision при переводе в float. Ни один из этих
+тестов не обращается к OpenXR runtime или игре.
+
+Проверено: Build-Native.ps1 -BuildDirectory build/native-trace, CTest 18/18,
+Python 16/16. PE import audit собранной tdvr_capture.dll подтвердил отсутствие
+зависимости на tdvr_math.dll. Игра/OpenXR/runtime в этом срезе не запускались.

@@ -200,6 +200,18 @@ Fake XR проверяет asymmetric FOV, позы, loss/invalid/recovery/no-re
 Сборка build/native-trace и CTest 17/17 прошли; Python 16/16.
 Подробности и ограничения — BUILD.md / CONTROL_API.md.
 
+DEV-004/VR-101/103: общий adapter преобразует owned XR views в обе камеры
+движка с отдельной simulation key текущего render context. Проверяет ожидаемые
+XR id/time, flags/ABI, численные значения и float precision. Панель использует
+его только для валидации; world-render hook пока не потребляет результат.
+Новый CPU test проверяет аналитические точки обоих asymmetric frustum, масштаб
+и IPD один раз, body/head yaw и отказ stale/invalid пары без частичной записи.
+Игра/runtime не запускаются до окончания пользовательской миссии. Синхронные
+два прохода, histories и перенос начала XR-кадра перед world render остаются
+следующими частями; DEV-004 и VR-101/102/103 не закрыты. Проверки:
+Build-Native.ps1, CTest 18/18, Python 16/16; PE imports capture не требуют
+отдельной tdvr_math.dll.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).
