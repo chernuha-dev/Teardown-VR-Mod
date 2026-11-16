@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <cwctype>
 
 namespace {
 constexpr uintptr_t camera_rva = 0x5ded80;
@@ -32,12 +33,41 @@ struct State {
     WorldRender world_original = nullptr;
     std::atomic<uint64_t> world_calls{0}, world_completed{0};
     TdvrWorldRenderStats world_stats{sizeof(TdvrWorldRenderStats), 1};
+    TdvrCameraOverride override_camera;
+    std::atomic<bool> override_pending{false};
+    TdvrCameraOverrideStats override_stats{sizeof(TdvrCameraOverrideStats), 1};
     bool attempted = false;
 };
 State& state() { static auto* s = new State; return *s; }
 bool read(const void* address, void* out, size_t size) {
     SIZE_T bytes = 0;
     return ReadProcessMemory(GetCurrentProcess(), address, out, size, &bytes) && bytes == size;
+}
+bool development_process() {
+    wchar_t executable[32768]{}, module_path[32768]{}, profile[32768]{};
+    HMODULE module = nullptr;
+    if (!GetModuleFileNameW(nullptr, executable, static_cast<DWORD>(std::size(executable)))
+        || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&TdvrSubmitCameraOverride), &module)
+        || !GetModuleFileNameW(module, module_path, static_cast<DWORD>(std::size(module_path)))) return false;
+    const auto profile_length = GetEnvironmentVariableW(L"TDVR_DEV_PROFILE", profile, static_cast<DWORD>(std::size(profile)));
+    if (!profile_length || profile_length >= std::size(profile)) return false;
+    std::wstring exe(executable), path(module_path);
+    for (auto& c : exe) c = static_cast<wchar_t>(std::towlower(c));
+    for (auto& c : path) c = static_cast<wchar_t>(std::towlower(c));
+    const auto build = path.rfind(L"\\build\\");
+    return build != std::wstring::npos && exe.find(path.substr(0, build)+L"\\local\\") == 0;
+}
+bool writable_camera(void* object) {
+    MEMORY_BASIC_INFORMATION region{};
+    if (!VirtualQuery(object, &region, sizeof(region)) || region.State != MEM_COMMIT
+        || (region.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return false;
+    const auto access = region.Protect & 0xff;
+    const auto address = reinterpret_cast<uintptr_t>(object);
+    const auto start = reinterpret_cast<uintptr_t>(region.BaseAddress);
+    return (access == PAGE_READWRITE || access == PAGE_EXECUTE_READWRITE || access == PAGE_WRITECOPY
+        || access == PAGE_EXECUTE_WRITECOPY) && address >= start
+        && address-start <= region.RegionSize && sizeof(TdvrEngineCameraMatrices) <= region.RegionSize-(address-start);
 }
 bool match_hash(const wchar_t* path) {
     BCRYPT_ALG_HANDLE algorithm = nullptr;
@@ -107,7 +137,8 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     RenderState state_before{}, state_after{};
     uintptr_t game = 0;
     bool valid = false, main_camera = false;
-    if (sample) {
+    const bool pending = s.override_pending.load(std::memory_order_acquire);
+    if (sample || pending) {
         valid = read(camera_object, before, sizeof(before))
             && read(static_cast<char*>(scene)+0x2208, &state_before, sizeof(state_before));
         for (const float value : before) if (!std::isfinite(value)) valid = false;
@@ -116,9 +147,32 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
         main_camera = read(reinterpret_cast<void*>(base+game_global_rva), &game, sizeof(game))
             && game && reinterpret_cast<uintptr_t>(camera_object) == game+0x240;
     }
-    // No replay, no matrix writes, no skipped simulation: preserve all arguments.
-    // Never hold the stats mutex across engine code (which may set other cameras).
-    s.world_original(scene, target, player, camera_object);
+    TdvrEngineCameraMatrices selected{};
+    bool apply = false;
+    if (pending) {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (valid && main_camera && GetCurrentThreadId() == s.world_stats.first_thread && writable_camera(camera_object)) {
+            apply = s.override_camera.take(GetTickCount64(), selected);
+            if (apply) {
+                ++s.override_stats.applied_calls;
+                std::memcpy(s.override_stats.last_camera, &selected, sizeof(selected));
+            }
+        } else ++s.override_stats.rejected_calls;
+        s.override_pending.store(s.override_camera.remaining(GetTickCount64()) != 0, std::memory_order_release);
+    }
+    // No replay or skipped simulation. Never hold the stats mutex across engine
+    // code. On opt-in, the original sees one selected eye; RAII restores the camera.
+    if (apply) {
+        {
+            TdvrEngineCameraScope scope(*static_cast<TdvrEngineCameraMatrices*>(camera_object), selected);
+            s.world_original(scene, target, player, camera_object);
+        }
+        float restored[34]{};
+        const bool restored_ok = read(camera_object, restored, sizeof(restored)) && !std::memcmp(before, restored, sizeof(before));
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (restored_ok) ++s.override_stats.restored_calls;
+        else { ++s.override_stats.rejected_calls; s.override_pending.store(false, std::memory_order_release); }
+    } else s.world_original(scene, target, player, camera_object);
     s.world_completed.fetch_add(1, std::memory_order_relaxed);
     if (!sample) return;
     valid = valid && read(camera_object, after, sizeof(after))
@@ -186,5 +240,25 @@ HRESULT WINAPI TdvrGetWorldRenderStats(TdvrWorldRenderStats* stats) {
     *stats = s.world_stats;
     stats->calls = s.world_calls.load(std::memory_order_relaxed);
     stats->completed_calls = s.world_completed.load(std::memory_order_relaxed);
+    return S_OK;
+}
+HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request) {
+    if (!request || request->size != sizeof(*request) || request->abi != 1) return E_INVALIDARG;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.world_stats.hook_installed || !s.world_stats.main_camera_matches || !development_process())
+        return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (!s.override_camera.arm(*request, GetTickCount64())) return E_INVALIDARG;
+    ++s.override_stats.accepted_requests;
+    s.override_pending.store(s.override_camera.remaining(GetTickCount64()) != 0, std::memory_order_release);
+    return S_OK;
+}
+HRESULT WINAPI TdvrGetCameraOverrideStats(TdvrCameraOverrideStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    *stats = s.override_stats;
+    stats->remaining_calls = s.override_pending.load(std::memory_order_relaxed)
+        ? s.override_camera.remaining(GetTickCount64()) : 0;
     return S_OK;
 }

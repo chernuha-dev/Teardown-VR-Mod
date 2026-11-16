@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Load/read the observational camera probe ONLY in an audited local/ development game.
+"""Load/read the camera diagnostic ONLY in an audited local/ development game.
 
-No game mutation, VR runtime startup, signature guessing, or attach to live installs.
+Default: observations only. Explicit --camera-test applies a bounded synthetic
+camera during world render. No VR startup, signature guessing or live attachment.
 SPDX-License-Identifier: MIT
 """
 import argparse
@@ -9,6 +10,8 @@ import ctypes as c
 from ctypes import wintypes as w
 import importlib.util
 import json
+import math
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -49,7 +52,38 @@ class RenderTrace(c.Structure):
                 ("last_hresult", c.c_int32), ("exhausted", c.c_uint32), ("generation", c.c_uint64), ("records", RenderStack * 64)]
 
 
-def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_render=False):
+class FrameKey(c.Structure):
+    _fields_ = [("simulation_id", c.c_uint64), ("time_ns", c.c_int64)]
+
+
+class Pose(c.Structure):
+    _fields_ = [("position", c.c_double * 3), ("orientation", c.c_double * 4)]
+
+
+class Fov(c.Structure):
+    _fields_ = [("left", c.c_double), ("right", c.c_double), ("up", c.c_double), ("down", c.c_double)]
+
+
+class EyeSample(c.Structure):
+    _fields_ = [("frame", FrameKey), ("pose", Pose), ("fov", Fov), ("flags", c.c_uint32)]
+
+
+class FrameInput(c.Structure):
+    _fields_ = [("frame", FrameKey), ("origin", Pose), ("scale", c.c_double),
+                ("near", c.c_double), ("far", c.c_double), ("eyes", EyeSample * 2)]
+
+
+class CameraRequest(c.Structure):
+    _fields_ = [(name, c.c_uint32) for name in ("size", "abi", "eye", "render_calls", "duration_ms", "reserved")] + [("frame", FrameInput)]
+
+
+class CameraOverrideStats(c.Structure):
+    _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
+                *[(name, c.c_uint64) for name in ("accepted_requests", "applied_calls", "restored_calls", "rejected_calls")],
+                ("remaining_calls", c.c_uint32), ("reserved", c.c_uint32), ("last_camera", c.c_float * 34)]
+
+
+def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_render=False, camera_test=None, override_stats=False):
     k = c.WinDLL("kernel32", use_last_error=True)
     declarations = {
         "OpenProcess": ([w.DWORD, w.BOOL, w.DWORD], w.HANDLE),
@@ -138,9 +172,14 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
         local = check(k.LoadLibraryW(str(dll)), "load local probe exports")
         try:
             start_address = check(k.GetProcAddress(local, b"TdvrResetRenderTrace" if render_trace else b"TdvrStartEngineProbe"), "start export")
-            stats_export = b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else b"TdvrGetEngineStats")
+            stats_export = b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else
+                            (b"TdvrGetCameraOverrideStats" if override_stats else b"TdvrGetEngineStats"))
             stats_address = check(k.GetProcAddress(local, stats_export), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
+            if camera_test is not None:
+                submit_offset = check(k.GetProcAddress(local, b"TdvrSubmitCameraOverride"), "camera request export") - local
+                override_offset = check(k.GetProcAddress(local, b"TdvrGetCameraOverrideStats"), "camera status export") - local
+                world_offset = check(k.GetProcAddress(local, b"TdvrGetWorldRenderStats"), "world render export") - local
         finally:
             k.FreeLibrary(local)
         if load:
@@ -161,15 +200,49 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
             status = call(module(dll.name) + start_offset)
             if status & 0x80000000:
                 raise RuntimeError(f"trace reset refused HRESULT=0x{status:08x}")
-        stats = RenderTrace() if render_trace else (WorldRenderStats() if world_render else EngineStats())
-        stats.size, stats.abi = c.sizeof(stats), 1
-        remote = check(k.VirtualAllocEx(process, None, c.sizeof(stats), 0x3000, 4), "allocate stats")
-        check(k.WriteProcessMemory(process, remote, c.byref(stats), c.sizeof(stats), None), "initialize stats")
-        status = call(module(dll.name) + stats_offset, remote)
-        if status & 0x80000000:
-            raise RuntimeError(f"stats failed HRESULT=0x{status:08x}")
-        check(k.ReadProcessMemory(process, remote, c.byref(stats), c.sizeof(stats), None), "read stats")
-        check(k.VirtualFreeEx(process, remote, 0, 0x8000), "free stats")
+        def exchange(offset, value, readback=True):
+            remote = check(k.VirtualAllocEx(process, None, c.sizeof(value), 0x3000, 4), "allocate diagnostic argument")
+            check(k.WriteProcessMemory(process, remote, c.byref(value), c.sizeof(value), None), "initialize diagnostic argument")
+            status = call(module(dll.name) + offset, remote)  # timeout intentionally retains in-flight storage
+            if not status & 0x80000000 and readback:
+                check(k.ReadProcessMemory(process, remote, c.byref(value), c.sizeof(value), None), "read diagnostic result")
+            check(k.VirtualFreeEx(process, remote, 0, 0x8000), "free diagnostic argument")
+            if status & 0x80000000:
+                raise RuntimeError(f"diagnostic call refused HRESULT=0x{status:08x}")
+            return value
+
+        def read_stats(offset, kind):
+            value = kind(); value.size, value.abi = c.sizeof(value), 1
+            return exchange(offset, value)
+
+        kind = RenderTrace if render_trace else (WorldRenderStats if world_render else (CameraOverrideStats if override_stats else EngineStats))
+        stats = read_stats(stats_offset, kind)
+        if camera_test is not None:
+            request = CameraRequest(); request.size, request.abi = c.sizeof(request), 1
+            if not camera_test.get("cancel"):
+                world = read_stats(world_offset, WorldRenderStats)
+                if not stats.valid_samples or not world.main_camera_matches:
+                    raise ValueError("Observe a gameplay camera before submitting a synthetic test")
+                request.eye = camera_test["eye"]; request.render_calls = 600; request.duration_ms = 10000
+                frame = request.frame
+                frame.frame = FrameKey(time.monotonic_ns(), 0)  # diagnostic tag, not XR predicted display time
+                frame.origin = Pose(stats.position, stats.orientation)
+                frame.scale = 1; frame.near, frame.far = world.camera[32:34]
+                p = world.camera
+                fov = camera_test.get("fov")
+                if fov is None:
+                    fov = [math.atan((p[8]-1)/p[0]), math.atan((p[8]+1)/p[0]),
+                           math.atan((p[9]+1)/p[5]), math.atan((p[9]-1)/p[5])]
+                else: fov = [math.radians(x) for x in fov]
+                for eye in range(2):
+                    sample = frame.eyes[eye]; sample.frame = frame.frame; sample.flags = 15
+                    sample.pose.position[:] = camera_test["offset"]
+                    sample.pose.position[0] += -.032 if eye == 0 else .032
+                    angle = math.radians(camera_test["yaw"])/2
+                    sample.pose.orientation[:] = (0, math.sin(angle), 0, math.cos(angle))
+                    sample.fov = Fov(*fov)
+            exchange(submit_offset, request, readback=False)
+            stats = read_stats(override_offset, CameraOverrideStats)
         if render_trace:
             if stats.record_count > 64 or any(s.depth > 24 for s in stats.records[:stats.record_count]):
                 raise RuntimeError("invalid render trace bounds")
@@ -178,9 +251,9 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
                     "records": [{"command": s.command, "observations": s.observations, "first_present": s.first_present,
                                  "executable_return_rvas": [f"0x{x:x}" for x in s.rvas[:s.depth]]}
                                 for s in stats.records[:stats.record_count]]}
-        return {"schema_version": 1, "observational_only": True, "runtime_started": False,
-                **{name: list(getattr(stats, name)) if name in ("position", "orientation", "projection", "camera") else getattr(stats, name)
-                   for name, _ in stats._fields_ if name not in ("size", "abi")}}
+        return {"schema_version": 1, "observational_only": camera_test is None and not override_stats, "runtime_started": False,
+                **{name: list(getattr(stats, name)) if name in ("position", "orientation", "projection", "camera", "last_camera") else getattr(stats, name)
+                   for name, _ in stats._fields_ if name not in ("size", "abi", "reserved")}}
     finally:
         k.CloseHandle(process)
 
@@ -193,14 +266,29 @@ def main():
     parser.add_argument("--render-trace", action="store_true", help="Read the already initialized capture module's recording stacks")
     parser.add_argument("--world-render", action="store_true", help="Observe the audited scene render boundary without changing its arguments")
     parser.add_argument("--reset-trace", action="store_true", help="Rearm the capture trace window for the current scene")
+    parser.add_argument("--camera-test", type=float, nargs=3, metavar=("X", "Y", "Z"), help="Apply a synthetic eye offset in metres for <=10 seconds, only in development")
+    parser.add_argument("--test-yaw", type=float, default=0, help="Synthetic local yaw in degrees")
+    parser.add_argument("--test-fov", type=float, nargs=4, metavar=("LEFT", "RIGHT", "UP", "DOWN"), help="Signed synthetic FOV angles in degrees")
+    parser.add_argument("--test-eye", choices=("left", "right"), default="left")
+    parser.add_argument("--cancel-camera-test", action="store_true")
+    parser.add_argument("--override-stats", action="store_true")
     args = parser.parse_args()
     try:
         if args.reset_trace and not args.render_trace:
             raise ValueError("--reset-trace requires --render-trace")
         if args.world_render and args.render_trace:
             raise ValueError("Select either world render observation or recording trace")
+        camera_test = None
+        if args.camera_test is not None or args.cancel_camera_test:
+            if args.world_render or args.render_trace or args.override_stats:
+                raise ValueError("Camera test is a separate diagnostic mode")
+            camera_test = {"cancel": args.cancel_camera_test, "offset": args.camera_test,
+                           "yaw": args.test_yaw, "fov": args.test_fov, "eye": int(args.test_eye == "right")}
+        if args.override_stats and (args.world_render or args.render_trace):
+            raise ValueError("Override stats are a separate diagnostic mode")
         dll = args.dll or REPO / "build/native/Release" / ("tdvr_capture.dll" if args.render_trace else "tdvr_engine_probe.dll")
-        print(json.dumps(probe(args.pid, dll, not (args.stats_only or args.render_trace), args.render_trace, args.reset_trace, args.world_render), indent=2, allow_nan=False))
+        print(json.dumps(probe(args.pid, dll, not (args.stats_only or args.render_trace or args.override_stats), args.render_trace,
+                               args.reset_trace, args.world_render, camera_test, args.override_stats), indent=2, allow_nan=False))
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({"error": str(error), "runtime_started": False}))

@@ -200,7 +200,8 @@ near/far depth. При отказе выход остаётся прежним. 
 `TdvrEngineCameraScope` сохраняет и восстанавливает ровно этот record, включая
 выход по исключению. Это строительный блок будущего render hook: он сам не
 выбирает игровую камеру, не обновляет внешние frustum/temporal caches, не
-синхронизирует потоки/симуляцию и пока не вызывается в Teardown.
+синхронизирует потоки/симуляцию. Теперь вызывается ограниченным opt-in
+диагностическим world-render hook, описанным ниже.
 
 CTest `engine_camera_layout` проверяет независимые asymmetric FOV, аналитические
 world points с yaw и переносом, все frustum edges на трёх глубинах, depth [0,1],
@@ -214,3 +215,31 @@ scaled clip fields, отказ при переполнении float/потер�
 относительный или абсолютный путь только в этом каталоге. Для новой DLL
 нужен следующий запуск development-копии. Opt-in `--trace` и команды чтения
 runtime stacks описаны в CAPTURE.md; обычные CTest не вызывают OpenXR.
+
+## Ограниченная подмена камеры в development-копии
+
+После запуска отдельной копии через capture launcher с отдельным профилем:
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --world-render
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --camera-test 2 0 0 --test-yaw 20
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --override-stats
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --cancel-camera-test
+```
+
+`--camera-test X Y Z` задаёт локальный перенос в метрах относительно последней
+наблюдавшейся позы. `--test-eye left|right` выбирает одну камеру из проверенной
+пары; `--test-fov LEFT RIGHT UP DOWN` задаёт signed angles в градусах (по
+умолчанию сохраняется наблюдавшийся frustum). Это synthetic input, не OpenXR.
+CLI проверяет путь/identity EXE и точный путь загруженной DLL; native дополнительно
+требует EXE под local/ того же repo и TDVR_DEV_PROFILE. Запрос живёт не более
+10 секунд / 600 render calls. При ошибке обоих eye packets прежний запрос
+не заменяется; отмена не требует валидного tracking packet.
+
+Hook подменяет только writable основную камеру на наблюдавшемся render thread,
+вызывает оригинал ровно один раз и проверяет побайтное восстановление record.
+Он не повторяет симуляцию/world render, не изолирует temporal histories и не
+подключает XR session. 3D-фон меню также использует основную камеру: диагностика
+не является определением gameplay state. Проверено на desktop-вилле:
+перенос 2 м / yaw 20°, 600 applied / 600 restored, 0 rejected, возврат исходного
+вида после исчерпания бюджета. CTest 14/14, Python 9/9; в шлем не отправлялось.

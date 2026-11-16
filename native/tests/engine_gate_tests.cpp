@@ -14,5 +14,12 @@ int main() {
     world.size = sizeof(world); world.abi = 1;
     if (FAILED(TdvrGetWorldRenderStats(&world)) || world.calls || world.completed_calls
         || world.valid_samples || world.signature_matched || world.hook_installed) return 1;
+    TdvrCameraOverrideRequest request{}; request.size = sizeof(request); request.abi = 1;
+    if (TdvrSubmitCameraOverride(nullptr) != E_INVALIDARG
+        || TdvrSubmitCameraOverride(&request) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)) return 1;
+    TdvrCameraOverrideStats override_stats{};
+    if (TdvrGetCameraOverrideStats(&override_stats) != E_INVALIDARG) return 1;
+    override_stats.size = sizeof(override_stats); override_stats.abi = 1;
+    if (FAILED(TdvrGetCameraOverrideStats(&override_stats)) || override_stats.applied_calls || override_stats.remaining_calls) return 1;
     std::cout << "Unknown executable rejected before any engine hook or camera access. No game or XR used.\n";
 }

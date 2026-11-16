@@ -163,3 +163,12 @@ prefix обоих entry points до установки hooks. В desktop-сце�
 Это подтверждает вызов и аргумент основной камеры в данном сценарии; hook
 ничего не подменяет и не повторяет. Значение history fields, их GPU ресурсы,
 target layout и per-eye temporal isolation по-прежнему не подтверждены.
+
+Следующий bounded diagnostic уже подставляет выбранный synthetic camera record
+внутри этого hook и восстанавливает его после единственного исходного вызова.
+На вилле заданные локальные 2 м / yaw 20° визуально изменили desktop-вид;
+600/600 records восстановились, rejected=0, затем вернулся исходный вид.
+Меню также использует Game+0x240: отдельная проверка Game+8 дала state 2 в меню
+и 6 на вилле. Нельзя объявлять gameplay только по main-camera pointer.
+Пока нет stereo replay, eye targets, GPU/history isolation и XR submit;
+перенос камеры не переносит инструмент/контроллеры и не подтверждает комфорт.
