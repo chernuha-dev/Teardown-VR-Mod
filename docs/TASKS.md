@@ -17,12 +17,19 @@ readback двух независимых targets. CTest 4/4, Python 8/8; WARP, R
 реальный SteamVR/OpenXR 2.18.4 preflight прошли без пользовательского теста
 в шлеме. Добавлен owned stereo packet с общим simulation id/time и отдельными
 view/projection (коммит f8f64d2); это CPU-контракт, не синхронизация игрового рендера.
-DEV-004 остаётся открытой: игровой render hook и работающий frame loop отсутствуют.
+DEV-004 остаётся открытой: игровой render hook и интеграция frame loop отсутствуют.
 Последующий срез добавил ручной `--session`: idle session и две swapchain
 64×64 создаются на runtime-required D3D12 adapter и освобождаются. Один запуск
 SteamVR/OpenXR подтвердил по 3 image на глаз, format 29, без кадров; затем
 пользователь запретил обращения к шлему на время Roblox, runtime больше не запускать.
 Fake session allocation/cleanup и callback exception tests проходят без runtime.
+Ресурсный срез — коммит 6d28ff6. Дополнительно реализован отдельный
+`run_stereo_frame`: WaitFrame/BeginFrame → один LocateViews → два acquire/wait →
+один callback всей пары → releases → EndFrame с одной projection layer.
+shouldRender=false, неотслеживаемая/невалидная поза не отправляют стереопару;
+таймаут/ошибка ownership требуют пересоздания session. Алгоритм проверен только
+fake XR, реального renderer callback, session event pump и игрового freeze ещё нет.
+Итого CTest 6/6, Python 8/8, без повторного запуска runtime.
 
 Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
 D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;

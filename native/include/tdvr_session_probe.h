@@ -22,7 +22,7 @@ struct SessionProbeReport {
     bool destroyed_session = false;
 };
 // Instance must have enabled D3D12 and queried graphics requirements first.
-// Device/queue must remain alive/current for the whole call and satisfy runtime.
+// Device/queue must remain alive for the whole call and satisfy runtime.
 // Each eye gets its own tiny 64x64, sample-count 1 swapchain. Images are inspected
 // only for non-null pointers: no GPU use or presentation while session is idle.
 SessionProbeReport probe_session(const SessionProbeDispatch& api, XrInstance instance,

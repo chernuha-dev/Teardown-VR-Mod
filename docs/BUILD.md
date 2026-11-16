@@ -151,3 +151,32 @@ instance при исключении и отсутствие callback до graph
 
 API: [xrCreateSession](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrCreateSession.html),
 [xrCreateSwapchain](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrCreateSwapchain.html).
+
+## Локальная проверка алгоритма кадра
+
+`tdvr_frame_loop` принимает dispatch, уже работающую stereo session, reference
+space и два живых target. Он не запускается из tdvr_diagnostic и не создаёт
+session самостоятельно. CTest `openxr_stereo_frame_fake` подменяет все XR вызовы;
+реальный loader/runtime в этот executable не линкуется.
+
+За кадр вызывается ровно один LocateViews на predictedDisplayTime, оба глаза
+переводятся в принадлежащий вызывающему коду stereo packet с единым simulation
+id/time. Callback отрисовки вызывается один раз после успешного acquire/wait
+обоих targets. Он обязан завершить GPU работу и вернуть изображения в состояние,
+требуемое runtime, до возврата/исключения. Затем release обоих images и EndFrame
+отправляют одну projection layer с двумя views в исходном reference space.
+
+При shouldRender=false или потере tracking кадр закрывается без слоя. Невалидные
+позы не подменяются старыми. Positive XR_TIMEOUT_EXPIRED не считается успехом:
+ожидание image ограничено 5 ms, не дождавшийся image не release-ится незаконно,
+а report требует прекратить кадры и уничтожить session вместе с её ресурсами.
+Ошибка правого глаза/renderer/release не отправляет левый глаз отдельно.
+
+Fake tests проверяют порядок всех вызовов, метки времени, отдельные FOV/targets,
+no-render/tracking-loss, частичный acquire, timeout обоих глаз, неверный индекс,
+исключение renderer, ошибки release/end, XR_FRAME_DISCARDED и session loss.
+Итог: CTest 6/6 и Python 8/8. Ни один из этих XR tests не использует шлем.
+
+Остаются session event lifecycle (READY/STOPPING/LOSS_PENDING), реальные spaces/
+input, GPU renderer с barriers/fences, источник одного состояния игры и hook.
+Наличие алгоритма не доказывает синхронное игровое стерео или комфорт.
