@@ -161,6 +161,18 @@ release и одна quad layer. Реализован session event lifecycle и 
 runtime-тестом его нужно отключить с сохранением копии. Смешивание запрещено.
 Параметры, stats и ограничения — BUILD.md. DEV-004/VR-101/102 остаются открыты.
 
+DEV-004, runtime-проверка 2026-11-17: отдельный OpenVR path registry устранил
+-51, собственная game session создана. Exact backbuffer format 28 не поддержан
+runtime; XR format 29 создаётся, но первая copy вернула E_INVALIDARG до submit.
+WARP regression воспроизвёл отказ с typeless storage; SDR recorder теперь явно
+проверяет declared SRGB format / DXGI color space и совместимую format family,
+не ослабляя exact eye-copy. Полутона и typeless copy проходят автоматически.
+Stats ABI 2 показывает format и failure stage. После закрытия Roblox
+пользователем проверен реальный game → OpenXR submit: 12080/12080 кадров,
+XR/GPU=0, quarantine=0, formats 28 → declared 29 / storage 27. Это плоская
+панель; независимое стерео, руки и комфорт в шлеме не подтверждены.
+DEV-004 и VR-101/102 остаются открыты. Подробности — BUILD.md.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

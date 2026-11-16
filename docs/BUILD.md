@@ -289,10 +289,11 @@ build/native-trace/Release/tdvr_capture_launcher.exe <development-exe> <absolute
 Это ручной режим с обращением к шлему. Не запускать рядом с Roblox или другим
 VR-приложением и не совмещать с dsound/dxgi proxy. Для собственной проверки
 development-копия должна содержать только наш capture module, без авторской DLL.
-Живая установка не является целью этой команды. Не запускалось после Escape.
+Живая установка не является целью этой команды. После разрешения пользователя
+проверено в отдельном development-процессе; управление мышью не используется.
 
 Путь: текущий backbuffer / PRESENT на известной DIRECT queue → собственный
-command list → exact-format copy в XR color image → восстановление PRESENT /
+command list → SDR byte copy в XR color image → восстановление PRESENT /
 RENDER_TARGET → submit на той же queue → CPU fence wait → XR release → EndFrame
 с одним quad для обоих глаз. Нет масштабирования или gamma conversion.
 XR binding использует игровой device/queue и требует совпадения runtime LUID
@@ -308,7 +309,7 @@ source reference и XR handles удерживаются до конца проц
 нового запуска этого диагностического режима; автоматического recovery пока нет.
 xrWaitFrame остаётся синхронным runtime-вызовом на Present thread.
 
-`TdvrGetPanelStats` (size/ABI=1) сообщает stage, frames/submitted, XR/HRESULT,
+`TdvrGetPanelStats` (size/ABI=2) сообщает stage, frames/submitted, XR/HRESULT,
 quarantine; launcher печатает изменения стадии и каждые 60 submissions.
 Stage: 0 idle, 1 init, 2 events, 3 frame, 4 copy, 5 submit, 6 stopped, 7 failed.
 Успешный submission не равен визуальной проверке в шлеме.
@@ -322,7 +323,45 @@ resize, ошибку cleanup и отсутствие автоматическо�
 или зависание физического GPU. Обычные capture hosts дополнительно проверяют
 нулевые panel stats по умолчанию, ABI и запрет позднего включения XR.
 
-Фактически: сборка build/native-trace, CTest 16/16, Python 12/12.
-Новый режим ещё не запускался с реальным runtime/игрой/шлемом.
+Первоначальный срез: сборка build/native-trace, CTest 16/16, Python 12/12.
+Результат последующего реального запуска описан ниже.
 Правило resource states:
 [Khronos D3D12 swapchain state](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XR_KHR_D3D12_enable-swapchain-image-state.html).
+
+### Первый игровой запуск и SDR/typeless (2026-11-17)
+
+Через VR_PATHREG_OVERRIDE на отдельную копию openvrpaths.vrpath игра создала
+OpenXR instance и D3D12 session на SteamVR 2.18.4. Исходный файл не менялся.
+Это устранило наблюдавшийся -51 без изменения ALVR/SteamVR settings. Первый
+запуск отказал на format 28 (-26); следующий создал XR swapchain format 29
+3440×1440 и начал один кадр, но recorder вернул E_INVALIDARG до GPU submit.
+На этих двух неудачных запусках кадров не отправлено. Затем управление
+окнами остановлено Escape; последующая проверка использует собственный API.
+
+Обнаружен дефект: XR D3D swapchain имеет конкретный declared format, но его
+ресурс возвращается typeless при наличии такого аналога — это прямо описано в
+[Khronos rendering spec](https://github.com/KhronosGroup/OpenXR-Docs/blob/main/specification/sources/chapters/rendering.adoc).
+WARP regression с TYPELESS target воспроизвёл отказ старого recorder, затем
+прошёл после исправления. Последующий игровой запуск подтвердил storage 27
+(R8G8B8A8_TYPELESS), source 28 и declared XR format 29.
+
+Отдельный record_sdr_display_copy требует DXGI SDR/sRGB color space и явный
+SRGB format, с которым создана XR swapchain. Он допускает только ту же RGBA8 /
+BGRA8 format family, включая typeless storage; bytes переносятся без повторного
+кодирования gamma. record_eye_copy сохраняет прежнюю строгую проверку exact
+format. Capture наблюдает успешные SetColorSpace1 (default 8-bit DXGI — sRGB);
+HDR/linear/неизвестные пространства отвергаются. Ничего не устанавливает через
+SetColorSpace1 сам. Обоснование default:
+[Microsoft Advanced Color](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/high-dynamic-range),
+совместимость copy formats:
+[CopyTextureRegion](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12graphicscommandlist-copytextureregion).
+
+WARP readback проверяет полутона 64/128/191/255, typeless target и отсутствие
+RGBA/BGRA swizzle; также отказ HDR/linear и сохранение строгого eye-copy gate.
+Добавлены source / declared XR / storage formats, color space и failure stage
+в panel stats ABI 2. После сообщения пользователя о закрытии Roblox новая
+сборка проверена с настоящей игрой и SteamVR: через собственный named pipe
+получено 12080 frames / 12080 submitted, stage 5, XR_SUCCESS, GPU S_OK,
+quarantined=0, color space=0. Это успешный приём плоской панели runtime,
+не визуальная проверка, не независимое стерео и не тест комфорта.
+Итоговые локальные проверки: CTest 17/17, Python 16/16.

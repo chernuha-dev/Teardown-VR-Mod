@@ -56,6 +56,7 @@ struct XrPanel::Impl {
     ComPtr<ID3D12Resource> pending_source;
     HANDLE event = nullptr;
     D3D12_RESOURCE_DESC source_desc{};
+    DXGI_FORMAT target_format = DXGI_FORMAT_UNKNOWN;
     uint64_t fence_value = 0;
     bool running = false, frame = false, terminal = false, gpu_pending = false;
     XrTime display_time = 0;
@@ -98,6 +99,7 @@ struct XrPanel::Impl {
         if (!same_device(device.Get(), source_device.Get())) throw GpuFailure{E_INVALIDARG};
         queue = q;
         source_desc = source->GetDesc();
+        report.source_format = source_desc.Format;
         if (source_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || !source_desc.Width || !source_desc.Height
             || source_desc.Width > 16384 || source_desc.Height > 16384 || source_desc.DepthOrArraySize != 1
             || source_desc.MipLevels != 1 || source_desc.SampleDesc.Count != 1
@@ -131,14 +133,17 @@ struct XrPanel::Impl {
         xrcheck(api.create_session(instance, &session_info, &session));
         if (!session) throw XrFailure{XR_ERROR_RUNTIME_FAILURE};
         const auto formats = enumerate(int64_t{}, [&](uint32_t n, uint32_t* count, int64_t* values) { return api.formats(session, n, count, values); });
-        if (std::find(formats.begin(), formats.end(), source_desc.Format) == formats.end()) throw XrFailure{XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED};
+        target_format = (source_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || source_desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB)
+            ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        report.swapchain_format = target_format;
+        if (std::find(formats.begin(), formats.end(), target_format) == formats.end()) throw XrFailure{XR_ERROR_SWAPCHAIN_FORMAT_UNSUPPORTED};
         XrReferenceSpaceCreateInfo reference{}; reference.type = XR_TYPE_REFERENCE_SPACE_CREATE_INFO;
         reference.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL; reference.poseInReferenceSpace.orientation.w = 1;
         xrcheck(api.create_space(session, &reference, &space));
         if (!space) throw XrFailure{XR_ERROR_RUNTIME_FAILURE};
         XrSwapchainCreateInfo swap{}; swap.type = XR_TYPE_SWAPCHAIN_CREATE_INFO;
         swap.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
-        swap.format = source_desc.Format; swap.width = static_cast<uint32_t>(source_desc.Width); swap.height = source_desc.Height;
+        swap.format = target_format; swap.width = static_cast<uint32_t>(source_desc.Width); swap.height = source_desc.Height;
         swap.sampleCount = swap.faceCount = swap.arraySize = swap.mipCount = 1;
         xrcheck(api.create_swapchain(session, &swap, &swapchain));
         if (!swapchain) throw XrFailure{XR_ERROR_RUNTIME_FAILURE};
@@ -147,6 +152,7 @@ struct XrPanel::Impl {
             return api.images(swapchain, n, count, reinterpret_cast<XrSwapchainImageBaseHeader*>(values)); });
         for (size_t i = 0; i < images.size(); ++i) {
             if (!images[i].texture) throw XrFailure{XR_ERROR_RUNTIME_FAILURE};
+            if (i == 0) report.resource_format = images[i].texture->GetDesc().Format;
             for (size_t j = 0; j < i; ++j) if (images[j].texture == images[i].texture) throw XrFailure{XR_ERROR_RUNTIME_FAILURE};
         }
         gpucheck(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator)));
@@ -197,7 +203,8 @@ struct XrPanel::Impl {
             if (index >= images.size()) throw XrFailure{XR_ERROR_RUNTIME_FAILURE};
             report.stage = 4;
             gpucheck(allocator->Reset()); gpucheck(list->Reset(allocator.Get(), nullptr));
-            gpucheck(record_eye_copy(list.Get(), source, D3D12_RESOURCE_STATE_PRESENT, images[index].texture, D3D12_RESOURCE_STATE_RENDER_TARGET));
+            gpucheck(record_sdr_display_copy(list.Get(), source, D3D12_RESOURCE_STATE_PRESENT, images[index].texture,
+                D3D12_RESOURCE_STATE_RENDER_TARGET, DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709, target_format));
             gpucheck(list->Close());
             pending_source = source; gpu_pending = true;
             ID3D12CommandList* lists[] = {list.Get()};
@@ -234,10 +241,12 @@ XrPanel::~XrPanel() {
     if (impl_->gpu_pending) impl_.release(); // Quarantine runtime + GPU allocations until process exit.
 }
 PanelStats XrPanel::stats() const noexcept { return impl_->report; }
-void XrPanel::present(ID3D12CommandQueue* queue, ID3D12Resource* source) noexcept {
+void XrPanel::present(ID3D12CommandQueue* queue, ID3D12Resource* source, DXGI_COLOR_SPACE_TYPE color_space) noexcept {
     auto& p = *impl_;
     if (p.terminal) return;
     try {
+        p.report.color_space = color_space;
+        if (color_space != DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709) throw GpuFailure{DXGI_ERROR_UNSUPPORTED};
         if (!p.instance) p.initialize(queue, source);
         if (queue != p.queue.Get() || !source) throw GpuFailure{E_INVALIDARG};
         const auto desc = source->GetDesc();
@@ -249,6 +258,6 @@ void XrPanel::present(ID3D12CommandQueue* queue, ID3D12Resource* source) noexcep
     } catch (const XrFailure& error) { p.report.xr = error.result; p.terminal = true; }
       catch (const GpuFailure& error) { p.report.gpu = error.result; p.terminal = true; }
       catch (...) { p.report.gpu = E_FAIL; p.terminal = true; }
-    if (p.terminal) { p.report.stage = 7; p.cleanup(); }
+    if (p.terminal) { p.report.failure_stage = p.report.stage; p.report.stage = 7; p.cleanup(); }
 }
 }

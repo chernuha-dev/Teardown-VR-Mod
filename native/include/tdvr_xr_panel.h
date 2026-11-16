@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include <windows.h>
 #include <d3d12.h>
+#include <dxgicommon.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include <memory>
@@ -37,6 +38,7 @@ struct PanelStats {
     HRESULT gpu = S_OK;
     uint32_t stage = 0; // 0 idle, 1 initializing, 2 events, 3 frame, 4 copy, 5 submit, 6 stopped, 7 failed
     bool quarantined = false;
+    uint32_t source_format = 0, swapchain_format = 0, resource_format = 0, color_space = 0, failure_stage = 0;
 };
 class XrPanel {
 public:
@@ -45,8 +47,9 @@ public:
     XrPanel(const XrPanel&) = delete;
     XrPanel& operator=(const XrPanel&) = delete;
     // Caller serializes calls on the Present thread. Source is a live backbuffer
-    // in PRESENT state on this DIRECT queue. No references survive a completed call.
-    void present(ID3D12CommandQueue* queue, ID3D12Resource* source) noexcept;
+    // in PRESENT state on this DIRECT queue. Failed unfinished GPU work retains
+    // its source; a completed successful copy releases it before returning.
+    void present(ID3D12CommandQueue* queue, ID3D12Resource* source, DXGI_COLOR_SPACE_TYPE color_space) noexcept;
     PanelStats stats() const noexcept;
 private:
     struct Impl;

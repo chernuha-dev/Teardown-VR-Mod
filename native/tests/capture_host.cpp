@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
     TdvrCaptureStats invalid{};
     TdvrPanelStats panel{};
     require(TdvrGetPanelStats(&panel) == E_INVALIDARG, "bad panel ABI accepted");
-    panel.size = sizeof(panel); panel.abi = 1;
+    panel.size = sizeof(panel); panel.abi = 2;
     require(TdvrGetPanelStats(&panel) == S_OK && !panel.enabled && !panel.frames && !panel.submitted, "XR panel enabled by default");
     require(TdvrGetCaptureStats(&invalid) == E_INVALIDARG, "bad ABI accepted");
     check(TdvrStartCapture(), "start capture");

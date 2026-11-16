@@ -23,6 +23,7 @@ using CreateHwnd = HRESULT (STDMETHODCALLTYPE*)(IDXGIFactory2*, IUnknown*, HWND,
 using Present = HRESULT (STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT);
 using Present1 = HRESULT (STDMETHODCALLTYPE*)(IDXGISwapChain1*, UINT, UINT, const DXGI_PRESENT_PARAMETERS*);
 using Resize = HRESULT (STDMETHODCALLTYPE*)(IDXGISwapChain*, UINT, UINT, UINT, DXGI_FORMAT, UINT);
+using SetColorSpace = HRESULT (STDMETHODCALLTYPE*)(IDXGISwapChain3*, DXGI_COLOR_SPACE_TYPE);
 
 struct CaptureWork {
     ComPtr<ID3D12Device> device;
@@ -41,6 +42,9 @@ struct Chain {
     ComPtr<ID3D12CommandQueue> queue;
     bool captured = false;
     bool failed = false;
+    // Our panel accepts only 8-bit SDR formats, whose DXGI creation default is
+    // sRGB. Successful SetColorSpace1 calls replace this observation.
+    DXGI_COLOR_SPACE_TYPE color_space = DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709;
 };
 struct State {
     std::recursive_mutex mutex;
@@ -59,6 +63,8 @@ struct State {
     Present present = nullptr;
     Present1 present1 = nullptr;
     Resize resize = nullptr;
+    SetColorSpace set_color_space = nullptr;
+    void* color_space_target = nullptr;
     void* create_swapchain_target = nullptr;
     void* create_hwnd_target = nullptr;
     void* present_target = nullptr;
@@ -221,7 +227,7 @@ void observe_present(IDXGISwapChain* object, UINT flags) noexcept {
                 ComPtr<ID3D12Resource> source;
                 s.stats.last_hresult = current->GetBuffer(current->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&source));
                 if (SUCCEEDED(s.stats.last_hresult))
-                    s.panel->present(found->second.queue.Get(), source.Get());
+                    s.panel->present(found->second.queue.Get(), source.Get(), found->second.color_space);
             }
         } catch (...) { s.stats.last_hresult = E_FAIL; }
         s.panel_busy = false;
@@ -253,6 +259,14 @@ HRESULT STDMETHODCALLTYPE resize(IDXGISwapChain* object, UINT count, UINT width,
     }
     return hr;
 }
+HRESULT STDMETHODCALLTYPE set_color_space(IDXGISwapChain3* object, DXGI_COLOR_SPACE_TYPE color) {
+    auto& s = state();
+    std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    const auto result = s.set_color_space(object, color);
+    const auto found = s.chains.find(object);
+    if (SUCCEEDED(result) && found != s.chains.end()) found->second.color_space = color;
+    return result;
+}
 void associate(IUnknown* device, IDXGISwapChain* object) noexcept {
     if (!device || !object) return;
     try {
@@ -269,6 +283,13 @@ void associate(IUnknown* device, IDXGISwapChain* object) noexcept {
         ComPtr<IDXGISwapChain1> chain1;
         if (SUCCEEDED(object->QueryInterface(IID_PPV_ARGS(&chain1)))) {
             if (!hook_method(method(chain1.Get(), 22), reinterpret_cast<void*>(present1), s.present1, s.present1_target)) {
+                ++s.stats.unsupported; return;
+            }
+        }
+        if (s.panel_enabled) {
+            ComPtr<IDXGISwapChain3> current;
+            if (FAILED(object->QueryInterface(IID_PPV_ARGS(&current)))
+                || !hook_method(method(current.Get(), 38), reinterpret_cast<void*>(set_color_space), s.set_color_space, s.color_space_target)) {
                 ++s.stats.unsupported; return;
             }
         }
@@ -425,11 +446,12 @@ HRESULT WINAPI TdvrEnableXrPanel() {
     return S_OK;
 }
 HRESULT WINAPI TdvrGetPanelStats(TdvrPanelStats* stats) {
-    if (!stats || stats->size != sizeof(TdvrPanelStats) || stats->abi != 1) return E_INVALIDARG;
+    if (!stats || stats->size != sizeof(TdvrPanelStats) || stats->abi != 2) return E_INVALIDARG;
     auto& s = state();
     std::lock_guard<std::recursive_mutex> lock(s.mutex);
     const auto panel = s.panel ? s.panel->stats() : tdvr::PanelStats{};
-    *stats = {sizeof(TdvrPanelStats), 1, s.panel_enabled ? 1u : 0u, panel.stage,
-        panel.frames, panel.submitted, panel.xr, panel.gpu, panel.quarantined ? 1u : 0u, 0};
+    *stats = {sizeof(TdvrPanelStats), 2, s.panel_enabled ? 1u : 0u, panel.stage,
+        panel.frames, panel.submitted, panel.xr, panel.gpu, panel.quarantined ? 1u : 0u, 0,
+        panel.source_format, panel.swapchain_format, panel.resource_format, panel.color_space, panel.failure_stage};
     return S_OK;
 }

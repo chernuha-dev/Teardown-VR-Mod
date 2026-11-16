@@ -254,7 +254,7 @@ int wmain(int argc, wchar_t** argv) {
                 wincheck(ReadProcessMemory(child.info.hProcess, stats_buffer, &stats, sizeof(stats), nullptr) != FALSE, "read stats");
                 if (xr_panel) {
                     static_assert(sizeof(TdvrPanelStats) <= sizeof(TdvrCaptureStats));
-                    TdvrPanelStats panel{}; panel.size = sizeof(panel); panel.abi = 1;
+                    TdvrPanelStats panel{}; panel.size = sizeof(panel); panel.abi = 2;
                     wincheck(WriteProcessMemory(child.info.hProcess, stats_buffer, &panel, sizeof(panel), nullptr) != FALSE, "initialize panel stats");
                     if (FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess, remote_dll + get_panel_rva, stats_buffer))))
                         throw std::runtime_error("panel stats failed");
@@ -263,7 +263,10 @@ int wmain(int argc, wchar_t** argv) {
                         panel_stage = panel.stage; panel_submitted = panel.submitted;
                         std::cout << "FLAT XR panel stage=" << panel.stage << " frames=" << panel.frames
                             << " submitted=" << panel.submitted << " xr=" << panel.xr_result
-                            << " gpu=" << panel.gpu_result << " quarantined=" << panel.quarantined << '\n';
+                            << " gpu=" << panel.gpu_result << " quarantined=" << panel.quarantined
+                            << " src=" << panel.source_format << " xr_format=" << panel.swapchain_format
+                            << " storage=" << panel.resource_format << " color=" << panel.color_space
+                            << " failed_at=" << panel.failure_stage << '\n';
                     }
                 }
                 if (trace && (++polls % 10 == 0)) {

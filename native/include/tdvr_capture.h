@@ -25,6 +25,7 @@ struct TdvrPanelStats {
     uint64_t frames, submitted;
     int32_t xr_result, gpu_result;
     uint32_t quarantined, reserved;
+    uint32_t source_format, swapchain_format, resource_format, color_space, failure_stage;
 };
 extern "C" {
 // Startup on a normal application thread BEFORE creating DXGI factories. No DllMain work.
