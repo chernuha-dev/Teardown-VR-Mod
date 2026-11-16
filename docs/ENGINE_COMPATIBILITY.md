@@ -151,3 +151,15 @@ Render candidate 0x865b0 уже при входе записывает player в
 Даже настоящий world render имеет side effects: слепой двойной вызов не
 доказывает независимые eye histories или синхронное стерео. Следующий этап —
 наблюдаемый hook этой границы, проверка camera/target и побочных состояний.
+
+Следующий срез установил observational hook 0x865b0 с ABI
+`void(scene*, target*, player*, camera*)`, проверяя полный EXE SHA и runtime
+prefix обоих entry points до установки hooks. В desktop-сцене виллы наблюдены
+780 calls / 780 completed, 49 valid samples / 0 invalid. Все 49 camera pointers
+совпали с global Game+0x240, camera record не изменился за render, serial вырос
+ровно на один и оба поля history поменялись местами. Все samples были на одном
+потоке. Near/far прочитаны непосредственно: 0.05 / 500 world units.
+
+Это подтверждает вызов и аргумент основной камеры в данном сценарии; hook
+ничего не подменяет и не повторяет. Значение history fields, их GPU ресурсы,
+target layout и per-eye temporal isolation по-прежнему не подтверждены.

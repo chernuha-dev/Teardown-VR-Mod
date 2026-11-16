@@ -74,6 +74,15 @@ render-side счётчик/перестановка полей: безопасн
 SteamVR 2.18.4, format 29, по 3 image на глаз; кадры не отправлялись.
 Игра в шлем ещё не подключена, контроллеры ещё не телепортировались.
 
+Следующий срез DEV-004/005: установлен проверяемый observational world-render
+hook 0x865b0 с исходными четырьмя аргументами. На вилле: 780/780 calls completed,
+49 valid / 0 invalid samples, 49 совпадений основной камеры, 0 её изменений,
+49 шагов render serial и 49 перестановок history fields; один поток.
+Camera setter продолжает совпадать с own math (~1.91e-6).
+Это ещё не stereo replay: eye target layout, GPU ownership, отдельные histories
+и OpenXR submit остаются работой следующего этапа. Unknown host/ABI gates,
+CTest 13/13 и Python 9/9 проверяются без шлема.
+
 Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
 D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;
 статические OpenGL imports не доказывают активный OpenGL. Следующий практический

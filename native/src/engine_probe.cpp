@@ -9,20 +9,29 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include <cstring>
 
 namespace {
 constexpr uintptr_t camera_rva = 0x5ded80;
+constexpr uintptr_t world_render_rva = 0x865b0;
+constexpr uintptr_t game_global_rva = 0xc50030;
+constexpr std::array<unsigned char, 22> world_prefix{{0x48,0x8b,0xc4,0x48,0x89,0x58,0x18,
+    0x48,0x89,0x50,0x10,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57}};
 constexpr std::array<unsigned char, 19> camera_prefix{{0x48,0x8b,0xc4,0x48,0x89,0x58,0x08,0x48,0x89,0x70,
     0x10,0x57,0x48,0x81,0xec,0xd0,0,0,0}};
 constexpr std::array<unsigned char, 32> observed_hash{{
     0x27,0x33,0xe3,0x79,0x69,0xfd,0x6d,0x45,0xc5,0xc2,0x13,0x08,0x72,0xb0,0xd4,0x09,
     0x61,0x47,0xc3,0x04,0x26,0x6b,0x4b,0x0a,0xdd,0xa0,0x1b,0xd9,0x8c,0xaa,0x2c,0x4d}};
 using SetCamera = void (*)(void*, const float*, const float*);
+using WorldRender = void (*)(void*, void*, void*, void*);
 struct State {
     std::mutex mutex;
     std::atomic<uint64_t> calls{0};
     TdvrEngineStats stats{sizeof(TdvrEngineStats), 1};
     SetCamera original = nullptr;
+    WorldRender world_original = nullptr;
+    std::atomic<uint64_t> world_calls{0}, world_completed{0};
+    TdvrWorldRenderStats world_stats{sizeof(TdvrWorldRenderStats), 1};
     bool attempted = false;
 };
 State& state() { static auto* s = new State; return *s; }
@@ -89,6 +98,44 @@ void camera(void* object, const float* position, const float* orientation) {
     state().original(object, position, orientation);
     observe(object, position, orientation);
 }
+struct RenderState { uint64_t serial; uint32_t history_a, history_b; };
+void world_render(void* scene, void* target, void* player, void* camera_object) {
+    auto& s = state();
+    const auto count = s.world_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool sample = (count & 15) == 1;
+    float before[34]{}, after[34]{};
+    RenderState state_before{}, state_after{};
+    uintptr_t game = 0;
+    bool valid = false, main_camera = false;
+    if (sample) {
+        valid = read(camera_object, before, sizeof(before))
+            && read(static_cast<char*>(scene)+0x2208, &state_before, sizeof(state_before));
+        for (const float value : before) if (!std::isfinite(value)) valid = false;
+        valid = valid && before[11] == -1 && before[10] < -1 && before[32] > 0 && before[33] > before[32];
+        const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        main_camera = read(reinterpret_cast<void*>(base+game_global_rva), &game, sizeof(game))
+            && game && reinterpret_cast<uintptr_t>(camera_object) == game+0x240;
+    }
+    // No replay, no matrix writes, no skipped simulation: preserve all arguments.
+    // Never hold the stats mutex across engine code (which may set other cameras).
+    s.world_original(scene, target, player, camera_object);
+    s.world_completed.fetch_add(1, std::memory_order_relaxed);
+    if (!sample) return;
+    valid = valid && read(camera_object, after, sizeof(after))
+        && read(static_cast<char*>(scene)+0x2208, &state_after, sizeof(state_after));
+    std::lock_guard<std::mutex> lock(s.mutex);
+    auto& stats = s.world_stats;
+    if (!valid) { ++stats.invalid_samples; return; }
+    ++stats.valid_samples;
+    if (main_camera) ++stats.main_camera_matches;
+    if (std::memcmp(before, after, sizeof(before))) ++stats.camera_mutations;
+    if (state_after.serial == state_before.serial+1) ++stats.serial_steps;
+    if (state_after.history_a == state_before.history_b && state_after.history_b == state_before.history_a) ++stats.history_swaps;
+    const auto thread = GetCurrentThreadId();
+    if (!stats.first_thread) stats.first_thread = thread;
+    else if (stats.first_thread != thread) ++stats.thread_changes;
+    std::memcpy(stats.camera, before, sizeof(before));
+}
 }
 HRESULT WINAPI TdvrStartEngineProbe(void*) {
     auto& s = state();
@@ -105,6 +152,11 @@ HRESULT WINAPI TdvrStartEngineProbe(void*) {
     if (!read(target, bytes.data(), bytes.size()) || bytes != camera_prefix)
         return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     s.stats.signature_matched = 1;
+    auto* world_target = reinterpret_cast<void*>(base + world_render_rva);
+    std::array<unsigned char, world_prefix.size()> world_bytes{};
+    if (!read(world_target, world_bytes.data(), world_bytes.size()) || world_bytes != world_prefix)
+        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+    s.world_stats.signature_matched = 1;
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
         reinterpret_cast<LPCWSTR>(&TdvrStartEngineProbe), &module)) return HRESULT_FROM_WIN32(GetLastError());
@@ -112,8 +164,11 @@ HRESULT WINAPI TdvrStartEngineProbe(void*) {
     if (MH_CreateHook(target, reinterpret_cast<void*>(camera), reinterpret_cast<void**>(&s.original)) != MH_OK) {
         MH_Uninitialize(); return E_FAIL;
     }
-    if (MH_EnableHook(target) != MH_OK) { MH_Uninitialize(); return E_FAIL; }
+    if (MH_CreateHook(world_target, reinterpret_cast<void*>(world_render), reinterpret_cast<void**>(&s.world_original)) != MH_OK
+        || MH_QueueEnableHook(target) != MH_OK || MH_QueueEnableHook(world_target) != MH_OK
+        || MH_ApplyQueued() != MH_OK) { MH_Uninitialize(); return E_FAIL; }
     s.stats.hook_installed = 1;
+    s.world_stats.hook_installed = 1;
     return S_OK;
 }
 HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats) {
@@ -122,5 +177,14 @@ HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats) {
     std::lock_guard<std::mutex> lock(s.mutex);
     *stats = s.stats;
     stats->camera_calls = s.calls.load(std::memory_order_relaxed);
+    return S_OK;
+}
+HRESULT WINAPI TdvrGetWorldRenderStats(TdvrWorldRenderStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    *stats = s.world_stats;
+    stats->calls = s.world_calls.load(std::memory_order_relaxed);
+    stats->completed_calls = s.world_completed.load(std::memory_order_relaxed);
     return S_OK;
 }

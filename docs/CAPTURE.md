@@ -142,3 +142,12 @@ Python 9/9. Для параллельной сборки без замены з�
 (return 0x6fd57), внутри функции 0x6f770. Следовательно, 0x6f770 включает
 рендер после настройки камеры, а не только camera setup. Стерео ещё не
 повторяется; собственные кадры в OpenXR не отправляются.
+
+`tdvr_engine_probe` теперь наблюдает также world render 0x865b0. Оба runtime
+prefix и EXE SHA проверяются до установки обоих hooks одной queued операцией.
+Новые `TdvrGetWorldRenderStats` / CLI `--world-render [--stats-only]` показывают
+завершённые вызовы, валидность camera record, совпадение с Game+0x240,
+изменения camera/serial/history и поток. Выборка — каждый 16-й вызов;
+original вызывается один раз с исходными аргументами, без удержания stats mutex.
+В desktop-сцене подтверждены 780 завершённых вызовов и 49 корректных samples;
+подробные ограничения и side effects — ENGINE_COMPATIBILITY.md.

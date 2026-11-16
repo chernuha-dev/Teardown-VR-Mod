@@ -34,6 +34,14 @@ class RenderStack(c.Structure):
                 ("observations", c.c_uint64), ("first_present", c.c_uint64), ("rvas", c.c_uint32 * 24)]
 
 
+class WorldRenderStats(c.Structure):
+    _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
+                *[(name, c.c_uint64) for name in ("calls", "completed_calls", "valid_samples", "invalid_samples",
+                  "main_camera_matches", "camera_mutations", "serial_steps", "history_swaps")],
+                *[(name, c.c_uint32) for name in ("first_thread", "thread_changes", "signature_matched", "hook_installed")],
+                ("camera", c.c_float * 34)]
+
+
 class RenderTrace(c.Structure):
     _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
                 ("commands", c.c_uint64), ("stack_samples", c.c_uint64), ("dropped", c.c_uint64),
@@ -41,7 +49,7 @@ class RenderTrace(c.Structure):
                 ("last_hresult", c.c_int32), ("exhausted", c.c_uint32), ("generation", c.c_uint64), ("records", RenderStack * 64)]
 
 
-def probe(pid, dll, load=True, render_trace=False, reset_trace=False):
+def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_render=False):
     k = c.WinDLL("kernel32", use_last_error=True)
     declarations = {
         "OpenProcess": ([w.DWORD, w.BOOL, w.DWORD], w.HANDLE),
@@ -130,7 +138,8 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False):
         local = check(k.LoadLibraryW(str(dll)), "load local probe exports")
         try:
             start_address = check(k.GetProcAddress(local, b"TdvrResetRenderTrace" if render_trace else b"TdvrStartEngineProbe"), "start export")
-            stats_address = check(k.GetProcAddress(local, b"TdvrGetRenderTrace" if render_trace else b"TdvrGetEngineStats"), "stats export")
+            stats_export = b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else b"TdvrGetEngineStats")
+            stats_address = check(k.GetProcAddress(local, stats_export), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
         finally:
             k.FreeLibrary(local)
@@ -152,7 +161,7 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False):
             status = call(module(dll.name) + start_offset)
             if status & 0x80000000:
                 raise RuntimeError(f"trace reset refused HRESULT=0x{status:08x}")
-        stats = RenderTrace() if render_trace else EngineStats()
+        stats = RenderTrace() if render_trace else (WorldRenderStats() if world_render else EngineStats())
         stats.size, stats.abi = c.sizeof(stats), 1
         remote = check(k.VirtualAllocEx(process, None, c.sizeof(stats), 0x3000, 4), "allocate stats")
         check(k.WriteProcessMemory(process, remote, c.byref(stats), c.sizeof(stats), None), "initialize stats")
@@ -170,7 +179,7 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False):
                                  "executable_return_rvas": [f"0x{x:x}" for x in s.rvas[:s.depth]]}
                                 for s in stats.records[:stats.record_count]]}
         return {"schema_version": 1, "observational_only": True, "runtime_started": False,
-                **{name: list(getattr(stats, name)) if name in ("position", "orientation", "projection") else getattr(stats, name)
+                **{name: list(getattr(stats, name)) if name in ("position", "orientation", "projection", "camera") else getattr(stats, name)
                    for name, _ in stats._fields_ if name not in ("size", "abi")}}
     finally:
         k.CloseHandle(process)
@@ -182,13 +191,16 @@ def main():
     parser.add_argument("--dll", type=Path)
     parser.add_argument("--stats-only", action="store_true")
     parser.add_argument("--render-trace", action="store_true", help="Read the already initialized capture module's recording stacks")
+    parser.add_argument("--world-render", action="store_true", help="Observe the audited scene render boundary without changing its arguments")
     parser.add_argument("--reset-trace", action="store_true", help="Rearm the capture trace window for the current scene")
     args = parser.parse_args()
     try:
         if args.reset_trace and not args.render_trace:
             raise ValueError("--reset-trace requires --render-trace")
+        if args.world_render and args.render_trace:
+            raise ValueError("Select either world render observation or recording trace")
         dll = args.dll or REPO / "build/native/Release" / ("tdvr_capture.dll" if args.render_trace else "tdvr_engine_probe.dll")
-        print(json.dumps(probe(args.pid, dll, not (args.stats_only or args.render_trace), args.render_trace, args.reset_trace), indent=2, allow_nan=False))
+        print(json.dumps(probe(args.pid, dll, not (args.stats_only or args.render_trace), args.render_trace, args.reset_trace, args.world_render), indent=2, allow_nan=False))
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({"error": str(error), "runtime_started": False}))
