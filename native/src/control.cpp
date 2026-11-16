@@ -103,7 +103,8 @@ std::string engine_status() {
                     << "],\"reset\":" << state.reset_flag << ",\"taa_word\":" << state.taa_word
                     << ",\"taa_word_readable\":" << state.taa_word_readable << ",\"scene_slot_mask\":" << state.scene_slot_mask
                     << ",\"scene_descriptor_mask\":" << state.scene_descriptor_mask << ",\"taa_slot_mask\":" << state.taa_slot_mask
-                    << ",\"taa_presence_mask\":" << state.taa_presence_mask << ",\"descriptor_hashes\":[";
+                    << ",\"taa_presence_mask\":" << state.taa_presence_mask << ",\"target_layout_mask\":" << state.target_layout_mask
+                    << ",\"descriptor_hashes\":[";
                 for (unsigned i = 0; i < 10; ++i) { if (i) out << ','; out << "\"" << std::hex << state.descriptor_hashes[i] << "\"" << std::dec; }
                 out << "]}";
             };

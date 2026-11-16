@@ -38,6 +38,9 @@ int main() {
     for (unsigned i = 0; i < 10; ++i) {
         const uint64_t texture = 0x30000+i*0x100;
         memory.regions[texture] = std::vector<uint8_t>(0x38,static_cast<uint8_t>(i+1));
+        memory.put<uint32_t>(texture,0,19); memory.put<uint32_t>(texture,4,11);
+        memory.put<uint32_t>(texture,0x30,1); memory.put<uint32_t>(texture,0xc,99+i);
+        memory.put<uint8_t>(texture,0x34,0);
         memory.put<uint64_t>(0x10000,fields[i],texture);
     }
     for (unsigned i = 0; i < 5; ++i) memory.put<uint64_t>(0x20000,0x50+i*8,0x90000+i*0x100);
@@ -47,7 +50,24 @@ int main() {
     const auto& b = before.state;
     require(b.serial == 9 && b.history[0] == 2 && b.history[1] == 3 && b.reset_flag == 1
         && b.taa_word == 7 && b.taa_word_readable && b.scene_slot_mask == 1023 && b.scene_descriptor_mask == 1023
-        && b.taa_slot_mask == 31 && b.taa_presence_mask == 31,"observed masks/history/counter incorrect");
+        && b.taa_slot_mask == 31 && b.taa_presence_mask == 31 && b.target_layout_mask == 1023,"observed masks/history/counter incorrect");
+    require(before.targets[0].width == 19 && before.targets[0].height == 11 && before.targets[0].color_count == 1
+        && before.targets[0].color_format_codes[0] == 99,"framebuffer descriptor fields lost or mistaken for DXGI");
+    TdvrTemporalTargetLayout parsed{};
+    auto depth_only = before.descriptors[0];
+    std::memset(depth_only.data()+0x30,0,4); depth_only[0x34] = 1;
+    require(tdvr_parse_temporal_target(depth_only.data(),depth_only.size(),parsed) && !parsed.color_count && parsed.depth_enabled,
+        "valid depth-only target rejected");
+    const auto last = parsed;
+    for (unsigned scenario = 0; scenario < 4; ++scenario) {
+        auto invalid = depth_only;
+        if (scenario == 0) invalid[0x34] = 0;
+        if (scenario == 1) invalid[0x30] = 9;
+        if (scenario == 2) std::memset(invalid.data(),0,4);
+        require(!tdvr_parse_temporal_target(invalid.data(),scenario == 3 ? 55 : invalid.size(),parsed)
+            && !std::memcmp(&parsed,&last,sizeof(parsed)),"invalid target partially replaced parsed layout");
+    }
+    require(!tdvr_parse_temporal_target(nullptr,56,parsed),"null descriptor accepted");
     require(memory.regions == untouched && memory.opaque_resource_reads == 0,"observer modified memory or dereferenced opaque TAA resources");
     memory.put<uint64_t>(0x10000,fields[0],0x30100); memory.put<uint64_t>(0x10000,fields[1],0x30000);
     memory.regions[0x30200][55] ^= 0xff;

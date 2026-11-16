@@ -253,11 +253,22 @@ Python 21/21. Engine wrappers, пять TAA objects на глаз и CPU history
 ещё не подключены; это GPU storage component, не stereo renderer. Пользователь
 ответил «Ещё играю» — игровые/XR-проверки по-прежнему не запускать.
 
+DEV-004/005: после разрешения пользователя проверен --xr-world-timing в
+development-игре без Computer Use. 12422/12422 XR frames, XR/GPU=0;
+tracked poses/FOV обоих глаз доступны через API. World: 11245 completed,
+703 valid samples, 0 invalid/thread changes; output target GetDesc подтверждён.
+Добавлен проверяемый parser framebuffer descriptor и target_layout_mask:
+в runtime все десять layouts валидны (0x3ff), пять TAA slots присутствуют.
+Важное уточнение: scene banks состоят из framebuffer aggregates с вложенными
+textures, поэтому отдельные D3D12 allocations ещё не являются engine banks.
+CTest 20/20; стерео world, head-camera override и руки пока не подключены.
+DEV-004/005 и VR-101/102/103 остаются открытыми.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).
 
-- [ ] VR-101: CPU stereo packet уже строит отдельные асимметричные view/projection, масштаб/IPD и обратные позы; проверены мировые точки/frustum edges/height/разные ориентации глаз. Чтение OpenXR views добавлено в собственную panel session и проверено fake XR; новая сборка в runtime ещё не проверена, игровой eye render pass не подключён.
+- [ ] VR-101: CPU stereo packet уже строит отдельные асимметричные view/projection, масштаб/IPD и обратные позы; проверены мировые точки/frustum edges/height/разные ориентации глаз. OpenXR views проверены fake XR и настоящим runtime; игровой eye render pass не подключён.
 - [ ] VR-102: CPU packet отвергает разные simulation id / predicted time и не публикует частичный результат. Источник общего состояния игры, два render pass и стерео GPU submit ещё не реализованы; синхронность движка не доказана.
 - [ ] VR-103: согласовать голову, тело, roomscale, рост, наклон, recenter и snap-turn; исключить двойной поворот/перемещение.
 - [ ] VR-104: сохранить качество графики игры по умолчанию; отдельно управлять разрешением VR и зеркала. Не компенсировать ошибку проекции ухудшением качества.

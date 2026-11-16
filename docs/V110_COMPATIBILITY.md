@@ -115,3 +115,21 @@ stereo_replay_enabled=false. Сырой REA output и файлы игры ост
 Проверки нового аудитора: Python unittest 21/21, включая неизвестные SHA всех
 трёх входов, неоднозначные/перекрывающиеся patterns, signed rel32 и границы.
 Нативный код этим срезом не изменялся; предыдущий CTest 18/18.
+
+### Уточнение типа history buffers
+
+Разбор pinned engine code уточнил resource helper: renderer vtable +0x138
+ведёт в factory RVA 0x5a8610. Он создаёт framebuffer aggregate, используя
+texture factory slot +0xe8 (0x5a9000) для вложенных color/depth textures.
+Constructor 0x59cb90 копирует 0x38 descriptor bytes; color pointers находятся
+в +0x38 (до восьми), depth в +0x78, auxiliary в +0x80. Wrapper size 0x88.
+Buffer release 0x5bd420 через manager передаёт aggregate в 0x5cb600;
+тот освобождает вложенные textures через 0x5dde10. Это не COM Release.
+
+Следовательно, десять scene pointers нельзя заменять десятью сырыми D3D12
+textures. Format codes descriptor также engine-specific, не DXGI_FORMAT.
+Эти выводы получены из статического потока инструкций; engine factories и
+destructors нашим кодом не вызывались, ownership/idle guarantee не доказаны.
+Slot +0x1d0 (0x5accf0) обрабатывает fence/pending lists, но полного GPU idle
+контракта пока нет. Следующий backend должен сохранять вложенную структуру
+ресурсов и подтверждённый lifecycle, а не обходить guards reference DLL.

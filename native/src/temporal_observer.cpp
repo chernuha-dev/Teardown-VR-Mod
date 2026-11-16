@@ -3,6 +3,23 @@
 #include <cstring>
 #include <limits>
 
+bool tdvr_parse_temporal_target(const void* bytes, size_t size, TdvrTemporalTargetLayout& output) {
+    if (!bytes || size != 0x38) return false;
+    const auto* p = static_cast<const uint8_t*>(bytes);
+    auto word = [&](size_t offset) -> uint32_t {
+        return uint32_t(p[offset]) | (uint32_t(p[offset+1]) << 8) | (uint32_t(p[offset+2]) << 16) | (uint32_t(p[offset+3]) << 24);
+    };
+    TdvrTemporalTargetLayout result{};
+    result.width = word(0); result.height = word(4); result.color_count = word(0x30);
+    result.depth_enabled = p[0x34] ? 1u : 0u;
+    result.depth_variant = p[0x35]; result.flag36 = p[0x36]; result.flag37 = p[0x37];
+    if (!result.width || result.width > 16384 || !result.height || result.height > 16384
+        || result.color_count > 8 || (!result.color_count && !result.depth_enabled)) return false;
+    for (uint32_t i = 0; i < result.color_count; ++i) result.color_format_codes[i] = word(0xc+4*i);
+    output = result;
+    return true;
+}
+
 bool tdvr_observe_temporal(uint64_t scene, TdvrTemporalRead read, void* context, TdvrTemporalObservation& output) {
     if (!read || !scene) return false;
     auto field = [&](uint64_t base, uint64_t offset, void* out, size_t size) {
@@ -24,6 +41,7 @@ bool tdvr_observe_temporal(uint64_t scene, TdvrTemporalRead read, void* context,
         auto& descriptor = result.descriptors[i];
         if (!field(pointer,0,descriptor.data(),descriptor.size())) continue;
         s.scene_descriptor_mask |= 1u << i;
+        if (tdvr_parse_temporal_target(descriptor.data(),descriptor.size(),result.targets[i])) s.target_layout_mask |= 1u << i;
         uint64_t hash = 14695981039346656037ull;
         for (const auto value : descriptor) { hash ^= value; hash *= 1099511628211ull; }
         s.descriptor_hashes[i] = hash;

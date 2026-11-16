@@ -568,3 +568,25 @@ objects. Оно не создаёт пять engine-specific TAA objects, не �
 history state и не запускает stereo replay. Соответствие настоящих history
 formats/queues/ownership ещё нужно проверить через engine observer; пользователь
 подтвердил, что всё ещё играет, поэтому новая game/runtime проверка не выполнялась.
+
+### Проверка world timing и framebuffer descriptors, 2026-11-17
+
+После явного разрешения пользователя запущена отдельная development-копия
+с --xr-world-timing, затем подключены engine probe --world-render и control.
+Управление через Game-Control.py, без захвата мыши. В одном запуске получены
+12422/12422 submitted XR frames, XR/GPU=0, quarantine=0; xr-views available=1,
+flags=15, отдельные asymmetric FOV/poses обоих глаз. Это runtime-проверка
+нового timing, не headset comfort test и не stereo world render.
+
+Temporal observer: 703/703 valid samples, все десять descriptors читаются и
+проходят parser, пять TAA slots присутствуют. Parser принимает ровно 0x38 bytes,
+проверяет extent 1..16384, color count 0..8 и наличие color либо depth.
+target_layout_mask отделяет распознанную структуру от scene_descriptor_mask
+(успешного чтения bytes). Engine-specific format codes не равны DXGI_FORMAT.
+CPU tests покрывают depth-only, неверные размеры/count/length/null и отсутствие
+частичной записи результата при отказе. Сборка и CTest 20/20 прошли.
+
+Десять scene objects — framebuffer aggregates с вложенными texture wrappers,
+а не десять ID3D12Resource. Поэтому EyeHistoryResources нельзя напрямую
+подставлять в scene slots: engine wrappers, attachments, TAA objects и lifecycle
+пока не реализованы. Изображение в runtime по-прежнему плоская игровая панель.

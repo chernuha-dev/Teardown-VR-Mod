@@ -197,5 +197,15 @@ QueryInterface(ID3D12Resource)/GetDesc. Не создаёт GPU work и не у�
 Первая загруженная сборка отвергла app-local Core из-за System32-only допуска
 (143 rejected samples), не вызвав COM. Исправление допускает указанный app-local
 path только с точными size/hash, либо системный Core. Оно собрано и прошло gate
-test отдельно; в текущий процесс исправленная DLL ещё не загружалась (module
-pinned). Успех GetDesc в игре пока не подтверждён, требуется следующий запуск.
+test отдельно. В следующем development-запуске исправленная DLL подтвердила
+GetDesc: 703 valid samples, 0 rejected, state 6, 3440×1440, один attachment;
+known/matching masks=1. Это чтение метаданных, не владение ресурсом.
+
+В режиме --xr-world-timing подтверждены 11245 completed world calls,
+703 sampled serial increments/history swaps, 0 invalid и 0 thread changes.
+Все десять scene descriptors прошли target parser (mask=0x3ff); pointers и
+descriptors не изменились внутри sampled render. TAA word в последнем sample
+изменился 0→1. Не следует объявлять этот word монотонным frame counter.
+Собственная XR session получила tracked views (flags=15) и отправила
+12422/12422 кадров, XR/GPU errors=0, quarantine=0. Начало XR frame теперь
+связано с world boundary; вывод остаётся quad, не независимым stereo world.
