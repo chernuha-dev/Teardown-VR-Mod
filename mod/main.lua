@@ -10033,7 +10033,8 @@ function updateActive(dt, flags)
         bodyYaw = bodyYaw + turn
     end
     RequestFirstPerson(false)
-    DisableMotionBlur()
+    -- Optional API: absent in Teardown 2.0.0. Keep the camera/tool update running.
+    if type(DisableMotionBlur) == "function" then DisableMotionBlur() end
     updateCameraMode()
     -- (v0.9: may switch to method 2 before this tick's camera. v0.9 review ATT-2: the check is suspended in a vehicle:
     -- its "1.0 s / 2 s in a row" timers restart, a dead stretch before the vehicle must not add to one after it)
