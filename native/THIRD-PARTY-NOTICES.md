@@ -20,5 +20,14 @@ contents of vendor/v0.22/dxgi.dll.
 - Copyright (c) 2007-2010 Baptiste Lepilleur and The JsonCpp Authors.
 - MIT / public domain: complete upstream terms in licenses/JsonCpp-LICENSE.txt.
 
-Keep this file and the licenses directory with any diagnostic executable.
+## MinHook (capture DLL only)
+
+- Source: https://github.com/TsudaKageyu/minhook
+- Pinned tag: v1.3.4; archive SHA-256
+  172708123daa0c98d20d3a980b16a50be14af243dc95dee6f79c24193ad010e4.
+- Copyright (C) 2009-2017 Tsuda Kageyu; BSD-2-Clause and included HDE notices.
+- Complete upstream license including HDE: licenses/MinHook-LICENSE.txt.
+- Statically linked into tdvr_capture.dll; no source modifications.
+
+Keep this file and the licenses directory with any diagnostic executable or DLL.
 No game, SteamVR, or ALVR binaries or configuration are distributed.

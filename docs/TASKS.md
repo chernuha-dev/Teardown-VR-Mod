@@ -31,6 +31,14 @@ shouldRender=false, неотслеживаемая/невалидная поза
 fake XR, реального renderer callback, session event pump и игрового freeze ещё нет.
 Итого CTest 6/6, Python 8/8, без повторного запуска runtime.
 
+Следующий срез: tdvr_capture.dll и development launcher перехватывают реальный
+DXGI/D3D12 Present в отдельном WARP host, читают backbuffer с точным hash,
+сохраняют штатные HRESULT и поддерживают успешный/неуспешный resize. Проверена
+загрузка DLL до main host без статического импорта. CTest 9/9, Python 8/8;
+runtime/шлем/Teardown не запускались. Подробности и ограничения — CAPTURE.md.
+До VR-прототипа остаётся подключить настоящий engine render/camera, два прохода
+и OpenXR GPU submit. Захват плоского backbuffer сам по себе не закрывает VR-101/102.
+
 Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
 D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;
 статические OpenGL imports не доказывают активный OpenGL. Следующий практический

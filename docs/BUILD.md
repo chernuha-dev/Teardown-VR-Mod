@@ -180,3 +180,10 @@ no-render/tracking-loss, частичный acquire, timeout обоих глаз
 Остаются session event lifecycle (READY/STOPPING/LOSS_PENDING), реальные spaces/
 input, GPU renderer с barriers/fences, источник одного состояния игры и hook.
 Наличие алгоритма не доказывает синхронное игровое стерео или комфорт.
+
+## Перехват DXGI
+
+Сборка дополнительно создаёт tdvr_capture.dll, tdvr_capture_launcher и два
+WARP host executable. MinHook v1.3.4 загружается по hash из cmake/MinHook.cmake,
+лицензии копируются к DLL. CTest теперь 9/9, Python 8/8; детали — CAPTURE.md.
+Все capture-тесты используют свой WARP-процесс, без OpenXR и шлема.
