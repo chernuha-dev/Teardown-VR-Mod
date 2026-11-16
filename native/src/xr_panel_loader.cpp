@@ -6,6 +6,6 @@ PanelApi panel_loader_api() {
         xrCreateSession, xrDestroySession, xrEnumerateSwapchainFormats, xrCreateSwapchain,
         xrDestroySwapchain, xrEnumerateSwapchainImages, xrCreateReferenceSpace, xrDestroySpace,
         xrPollEvent, xrBeginSession, xrEndSession, xrWaitFrame, xrBeginFrame, xrEndFrame,
-        xrAcquireSwapchainImage, xrWaitSwapchainImage, xrReleaseSwapchainImage};
+        xrAcquireSwapchainImage, xrWaitSwapchainImage, xrReleaseSwapchainImage, xrLocateViews};
 }
 }

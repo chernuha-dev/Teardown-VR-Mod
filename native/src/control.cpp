@@ -93,6 +93,32 @@ std::string engine_status() {
 std::string execute(const std::string& command) {
     if (command == "ping") return "{\"ok\":true,\"protocol\":1}";
     if (command == "engine-status") return engine_status();
+    if (command == "xr-views") {
+        const auto capture = GetModuleHandleW(L"tdvr_capture.dll");
+        const auto get = capture ? reinterpret_cast<HRESULT (WINAPI*)(TdvrXrViewSnapshot*)>(GetProcAddress(capture, "TdvrGetXrViews")) : nullptr;
+        if (!get) return "{\"ok\":false,\"error\":\"xr_views_export_unavailable\"}";
+        TdvrXrViewSnapshot snapshot{}; snapshot.size = sizeof(snapshot); snapshot.abi = 1;
+        const auto hr = get(&snapshot);
+        std::ostringstream out; out.imbue(std::locale::classic()); out.precision(17);
+        out << "{\"ok\":" << (SUCCEEDED(hr) ? "true" : "false") << ",\"hresult\":" << hr;
+        if (SUCCEEDED(hr)) {
+            out << ",\"available\":" << snapshot.available << ",\"sample_result\":" << snapshot.sample_result
+                << ",\"xr_frame_id\":" << snapshot.frame_id << ",\"predicted_display_time\":" << snapshot.predicted_display_time
+                << ",\"view_state_flags\":" << snapshot.view_state_flags;
+            if (snapshot.available) {
+                out << ",\"eyes\":[";
+                for (unsigned eye = 0; eye < 2; ++eye) {
+                    if (eye) out << ',';
+                    const auto& p = snapshot.eyes[eye]; const auto& f = snapshot.fov[eye];
+                    out << "{\"position\":[" << p.position[0] << ',' << p.position[1] << ',' << p.position[2]
+                        << "],\"orientation\":[" << p.orientation[0] << ',' << p.orientation[1] << ',' << p.orientation[2] << ',' << p.orientation[3]
+                        << "],\"fov\":[" << f.left << ',' << f.right << ',' << f.up << ',' << f.down << "]}";
+                }
+                out << ']';
+            }
+        }
+        out << '}'; return out.str();
+    }
     if (command == "request-exit") {
         // Ask this process's own game window to follow its normal exit path.
         // Does not activate a window, synthesize a key, or terminate the process.

@@ -22,10 +22,13 @@ StartCapture externally_started = nullptr;
 GetCaptureStats externally_stats = nullptr;
 using GetPanelStats = HRESULT (WINAPI*)(TdvrPanelStats*);
 GetPanelStats externally_panel = nullptr;
+using GetXrViews = HRESULT (WINAPI*)(TdvrXrViewSnapshot*);
+GetXrViews externally_views = nullptr;
 StartCapture externally_enable_panel = nullptr;
 #define TdvrStartCapture externally_started
 #define TdvrGetCaptureStats externally_stats
 #define TdvrGetPanelStats externally_panel
+#define TdvrGetXrViews externally_views
 #define TdvrEnableXrPanel externally_enable_panel
 #endif
 using Microsoft::WRL::ComPtr;
@@ -55,8 +58,9 @@ int main(int argc, char** argv) {
     externally_started = reinterpret_cast<StartCapture>(GetProcAddress(module, "TdvrStartCapture"));
     externally_stats = reinterpret_cast<GetCaptureStats>(GetProcAddress(module, "TdvrGetCaptureStats"));
     externally_panel = reinterpret_cast<GetPanelStats>(GetProcAddress(module, "TdvrGetPanelStats"));
+    externally_views = reinterpret_cast<GetXrViews>(GetProcAddress(module, "TdvrGetXrViews"));
     externally_enable_panel = reinterpret_cast<StartCapture>(GetProcAddress(module, "TdvrEnableXrPanel"));
-    require(externally_started && externally_stats && externally_panel && externally_enable_panel, "injected exports missing");
+    require(externally_started && externally_stats && externally_panel && externally_enable_panel && externally_views, "injected exports missing");
     require(TdvrStartCapture() == S_FALSE, "capture was not initialized before child main");
     if (const auto* profile = std::getenv("TDVR_DEV_PROFILE")) {
         char folder[MAX_PATH]{};
@@ -88,6 +92,12 @@ int main(int argc, char** argv) {
     require(TdvrGetPanelStats(&panel) == E_INVALIDARG, "bad panel ABI accepted");
     panel.size = sizeof(panel); panel.abi = 2;
     require(TdvrGetPanelStats(&panel) == S_OK && !panel.enabled && !panel.frames && !panel.submitted, "XR panel enabled by default");
+    TdvrXrViewSnapshot views{};
+    require(TdvrGetXrViews(nullptr) == E_INVALIDARG && TdvrGetXrViews(&views) == E_INVALIDARG, "invalid view ABI accepted");
+    views.size = sizeof(views); views.abi = 2;
+    require(TdvrGetXrViews(&views) == E_INVALIDARG, "unknown view ABI accepted");
+    views.abi = 1;
+    require(TdvrGetXrViews(&views) == S_OK && !views.available && !views.frame_id, "XR views available without runtime");
     require(TdvrGetCaptureStats(&invalid) == E_INVALIDARG, "bad ABI accepted");
     check(TdvrStartCapture(), "start capture");
     require(TdvrEnableXrPanel() == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "late XR enable accepted");

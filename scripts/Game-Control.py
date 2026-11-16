@@ -11,7 +11,8 @@ from pathlib import Path
 import sys
 
 REPO = Path(__file__).resolve().parents[1]
-COMMANDS = {"tdvr_status": "status", "tdvr_ping": "ping", "tdvr_engine_status": "engine-status", "tdvr_request_exit": "request-exit"}
+COMMANDS = {"tdvr_status": "status", "tdvr_ping": "ping", "tdvr_engine_status": "engine-status",
+            "tdvr_xr_views": "xr-views", "tdvr_request_exit": "request-exit"}
 
 
 def attach(pid, dll):

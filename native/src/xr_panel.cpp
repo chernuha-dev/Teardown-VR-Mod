@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "tdvr_xr_panel.h"
 #include "tdvr_eye_copy.h"
+#include "tdvr_frame.h"
 #include <wrl/client.h>
 #include <algorithm>
 #include <cstring>
@@ -41,6 +42,7 @@ bool same_device(ID3D12Device* a, ID3D12Device* b) {
 struct XrPanel::Impl {
     PanelApi api;
     PanelStats report;
+    TdvrXrViewSnapshot observed{sizeof(TdvrXrViewSnapshot), 1};
     XrInstance instance = XR_NULL_HANDLE;
     XrSession session = XR_NULL_HANDLE;
     XrSpace space = XR_NULL_HANDLE;
@@ -66,7 +68,7 @@ struct XrPanel::Impl {
             && api.create_session && api.destroy_session && api.formats && api.create_swapchain
             && api.destroy_swapchain && api.images && api.create_space && api.destroy_space
             && api.poll && api.begin_session && api.end_session && api.wait_frame
-            && api.begin_frame && api.end_frame && api.acquire && api.wait_image && api.release;
+            && api.begin_frame && api.end_frame && api.acquire && api.wait_image && api.release && api.locate_views;
     }
     void cleanup() noexcept {
         if (gpu_pending) { report.quarantined = true; return; }
@@ -184,6 +186,44 @@ struct XrPanel::Impl {
             }
         }
     }
+    void locate_views() {
+        observed.frame_id = report.frames;
+        observed.predicted_display_time = display_time;
+        XrViewLocateInfo info{}; info.type = XR_TYPE_VIEW_LOCATE_INFO;
+        info.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+        info.displayTime = display_time; info.space = space;
+        XrViewState state{}; state.type = XR_TYPE_VIEW_STATE;
+        XrView views[2]{}; for (auto& view : views) view.type = XR_TYPE_VIEW;
+        uint32_t count = 0;
+        observed.sample_result = api.locate_views(session, &info, &state, 2, &count, views);
+        xrcheck(static_cast<XrResult>(observed.sample_result));
+        if (count != 2) { observed.sample_result = XR_ERROR_RUNTIME_FAILURE; throw XrFailure{XR_ERROR_RUNTIME_FAILURE}; }
+        observed.view_state_flags = state.viewStateFlags;
+        constexpr XrViewStateFlags required = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT
+            | XR_VIEW_STATE_ORIENTATION_TRACKED_BIT | XR_VIEW_STATE_POSITION_TRACKED_BIT;
+        if ((state.viewStateFlags & required) != required) return;
+        TdvrFrameInput input{};
+        input.frame = {report.frames, display_time}; // XR frame number, not game simulation identity
+        input.world_from_tracking.orientation[3] = 1;
+        input.world_scale = 1; input.near_clip_m = .05; input.far_clip_m = 500;
+        for (unsigned eye = 0; eye < 2; ++eye) {
+            const auto& p = views[eye].pose; const auto& fov = views[eye].fov;
+            input.eyes[eye] = {input.frame,
+                {{p.position.x, p.position.y, p.position.z}, {p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w}},
+                {fov.angleLeft, fov.angleRight, fov.angleUp, fov.angleDown},
+                TDVR_ORIENTATION_VALID | TDVR_POSITION_VALID | TDVR_ORIENTATION_TRACKED | TDVR_POSITION_TRACKED};
+        }
+        TdvrStereoFrame validated;
+        if (tdvr_build_stereo_frame(&input, &validated) != TDVR_OK) {
+            observed.sample_result = XR_ERROR_VALIDATION_FAILURE;
+            return; // Flat quad remains usable; invalid tracking cannot drive a camera.
+        }
+        for (unsigned eye = 0; eye < 2; ++eye) {
+            observed.eyes[eye] = input.eyes[eye].tracking_pose;
+            observed.fov[eye] = input.eyes[eye].fov;
+        }
+        observed.available = 1;
+    }
     void render(ID3D12Resource* source) {
         report.stage = 3;
         XrFrameWaitInfo wait{}; wait.type = XR_TYPE_FRAME_WAIT_INFO;
@@ -195,6 +235,7 @@ struct XrPanel::Impl {
         frame = true; ++report.frames;
         XrCompositionLayerQuad quad{}; quad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
         if (state.shouldRender) {
+            locate_views(); // One coherent pair at this frame's predicted time.
             uint32_t index = 0;
             XrSwapchainImageAcquireInfo acquire{}; acquire.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
             xrcheck(api.acquire(swapchain, &acquire, &index));
@@ -241,8 +282,10 @@ XrPanel::~XrPanel() {
     if (impl_->gpu_pending) impl_.release(); // Quarantine runtime + GPU allocations until process exit.
 }
 PanelStats XrPanel::stats() const noexcept { return impl_->report; }
+TdvrXrViewSnapshot XrPanel::views() const noexcept { return impl_->observed; }
 void XrPanel::present(ID3D12CommandQueue* queue, ID3D12Resource* source, DXGI_COLOR_SPACE_TYPE color_space) noexcept {
     auto& p = *impl_;
+    p.observed = {sizeof(TdvrXrViewSnapshot), 1};
     if (p.terminal) return;
     try {
         p.report.color_space = color_space;
@@ -258,6 +301,6 @@ void XrPanel::present(ID3D12CommandQueue* queue, ID3D12Resource* source, DXGI_CO
     } catch (const XrFailure& error) { p.report.xr = error.result; p.terminal = true; }
       catch (const GpuFailure& error) { p.report.gpu = error.result; p.terminal = true; }
       catch (...) { p.report.gpu = E_FAIL; p.terminal = true; }
-    if (p.terminal) { p.report.failure_stage = p.report.stage; p.report.stage = 7; p.cleanup(); }
+    if (p.terminal) { p.observed.available = 0; p.report.failure_stage = p.report.stage; p.report.stage = 7; p.cleanup(); }
 }
 }

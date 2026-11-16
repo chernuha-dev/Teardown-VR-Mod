@@ -14,6 +14,7 @@
 python scripts/Game-Control.py --pid <development-pid> --attach ping
 python scripts/Game-Control.py --pid <development-pid> status
 python scripts/Game-Control.py --pid <development-pid> engine-status
+python scripts/Game-Control.py --pid <development-pid> xr-views
 python scripts/Game-Control.py --pid <development-pid> request-exit
 ```
 
@@ -38,6 +39,16 @@ panel stats недоступны; её нельзя считать отсутс�
 snapshot симуляции. На этом срезе команда собрана и проходит локальные проверки;
 её сквозная проверка в настоящей игре отложена, пока пользователь играет.
 
+`xr-views` читает последний owned snapshot поз/FOV обоих глаз. `available=1`
+означает, что на последнем обработанном XR-кадре обе позы valid/tracked и
+прошли численные проверки. `xr_frame_id` не является simulation id игры.
+Время — непреобразованный XrTime; это не Unix timestamp. Порядок FOV:
+left, right, up, down (радианы); позиции в метрах, quaternion xyzw, LOCAL
+space, +X вправо / +Y вверх / -Z вперёд. Никакой IPD повторно не добавляется.
+При available=0 блок eyes отсутствует. Остановка Present не обнаруживается
+самим getter: потребитель обязан проверять продвижение frame_id и время
+жизни кадра перед использованием. Это наблюдение, не канал управления камерой.
+
 `request-exit` отправляет WM_CLOSE только собственному видимому TeardownWindow.
 Ответ exit_requested не подтверждает завершение: процесс проверяется отдельно.
 Игра может завершиться до получения ответа клиентом. Команда не вызывает
@@ -50,7 +61,8 @@ python scripts/Game-Control.py --mcp
 ```
 
 Это stdio сервер JSON-RPC с сообщением на строку. Инструменты `tdvr_ping`,
-`tdvr_status`, `tdvr_engine_status`, `tdvr_request_exit` принимают единственный аргумент `pid`
+`tdvr_status`, `tdvr_engine_status`, `tdvr_xr_views`, `tdvr_request_exit`
+принимают единственный аргумент `pid`
 (положительное целое число). Перед использованием требуется CLI `--attach`.
 Initialize, tools/list и protocol ping не обращаются к игре. Сервер реализован,
 но автоматически в настройки Codex не зарегистрирован; CLI уже работает.

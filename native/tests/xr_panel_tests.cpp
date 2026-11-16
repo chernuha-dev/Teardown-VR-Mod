@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <limits>
+#include <cmath>
 using Microsoft::WRL::ComPtr;
 namespace {
 void require(bool condition, const char* message) { if (!condition) { std::cerr << message << '\n'; std::exit(1); } }
@@ -23,6 +25,11 @@ struct Fixture {
     unsigned instances_destroyed = 0, sessions_destroyed = 0, spaces_destroyed = 0, swaps_destroyed = 0;
     bool render = true, wrong_luid = false, unsupported_format = false, bad_index = false;
     XrResult create_result = XR_SUCCESS, image_wait_result = XR_SUCCESS, end_result = XR_SUCCESS, destroy_result = XR_SUCCESS;
+    XrResult locate_result = XR_SUCCESS;
+    uint32_t view_count = 2;
+    XrViewStateFlags view_flags = 15;
+    unsigned located = 0;
+    bool invalid_pose = false, invalid_fov = false;
     void submit(ID3D12GraphicsCommandList* list) {
         check(list->Close()); ID3D12CommandList* lists[] = {list}; queue->ExecuteCommandLists(1, lists);
         ComPtr<ID3D12Fence> fence; check(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
@@ -119,6 +126,20 @@ FN(begin_session, (XrSession, const XrSessionBeginInfo* info)) { require(info->p
 FN(end_session, (XrSession)) { ++f->ends; return XR_SUCCESS; }
 FN(wait_frame, (XrSession, const XrFrameWaitInfo*, XrFrameState* out)) { out->predictedDisplayTime = 123456; out->shouldRender = f->render; return XR_SUCCESS; }
 FN(begin_frame, (XrSession, const XrFrameBeginInfo*)) { return XR_SUCCESS; }
+FN(locate_views, (XrSession session, const XrViewLocateInfo* info, XrViewState* state, uint32_t capacity, uint32_t* count, XrView* views)) {
+    require(session == handle<XrSession>(2) && info->space == handle<XrSpace>(4)
+        && info->displayTime == 123456 && info->viewConfigurationType == XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO
+        && capacity == 2 && views[0].type == XR_TYPE_VIEW && views[1].type == XR_TYPE_VIEW, "located pair arguments");
+    ++f->located; *count = f->view_count; state->viewStateFlags = f->view_flags;
+    for (unsigned eye = 0; eye < 2; ++eye) {
+        views[eye].pose.orientation = {0, .5f, 0, .8660254f};
+        views[eye].pose.position = {eye ? .036f : -.032f, 1.7f, -.25f};
+        views[eye].fov = eye ? XrFovf{-1.1f, .8f, 1.0f, -.7f} : XrFovf{-.9f, 1.0f, .8f, -1.1f};
+    }
+    if (f->invalid_pose) views[1].pose.position.x = std::numeric_limits<float>::quiet_NaN();
+    if (f->invalid_fov) views[1].fov.angleRight = views[1].fov.angleLeft;
+    return f->locate_result;
+}
 FN(end_frame, (XrSession, const XrFrameEndInfo* info)) {
     ++f->frame_ends; require(info->displayTime == 123456 && info->environmentBlendMode == XR_ENVIRONMENT_BLEND_MODE_OPAQUE, "frame timing");
     if (info->layerCount) {
@@ -135,9 +156,48 @@ FN(wait_image, (XrSwapchain, const XrSwapchainImageWaitInfo* info)) { require(in
 FN(release, (XrSwapchain, const XrSwapchainImageReleaseInfo*)) { f->pixels_on_release(); ++f->released; return XR_SUCCESS; }
 tdvr::PanelApi api() { return {create_instance, destroy_instance, get_system, get_proc, create_session, destroy_session,
     formats, create_swapchain, destroy_swapchain, images, create_space, destroy_space, poll, begin_session, end_session,
-    wait_frame, begin_frame, end_frame, acquire, wait_image, release}; }
+    wait_frame, begin_frame, end_frame, acquire, wait_image, release, locate_views}; }
 }
 int main() {
+    { Fixture test; f = &test; tdvr::XrPanel panel(api());
+      require(!panel.views().available, "tracking available before any frame");
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      const auto located = panel.views();
+      require(located.available && located.frame_id == 1 && located.predicted_display_time == 123456
+          && located.view_state_flags == 15 && f->located == 1, "one located pair per predicted frame");
+      require(std::abs(located.eyes[0].position[0] + .032) < 1e-7 && std::abs(located.eyes[1].position[0] - .036) < 1e-7
+          && located.fov[0].left != located.fov[1].left && located.fov[0].up != located.fov[1].up
+          && std::abs(located.eyes[0].orientation[1] - .5) < 1e-7, "independent runtime poses and asymmetric FOV");
+      f->view_flags = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(!panel.views().available && panel.views().eyes[1].position[0] == 0 && panel.stats().submitted == 2,
+          "tracking loss must invalidate old pair without breaking flat quad");
+      f->view_flags = 15; f->invalid_pose = true;
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(!panel.views().available && panel.views().sample_result == XR_ERROR_VALIDATION_FAILURE, "NaN pose rejected");
+      f->invalid_pose = false; f->invalid_fov = true;
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(!panel.views().available && panel.views().sample_result == XR_ERROR_VALIDATION_FAILURE, "invalid FOV rejected");
+      f->invalid_fov = false;
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(panel.views().available, "fresh tracking recovers");
+      f->render = false;
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(!panel.views().available && f->located == 5, "no-render clears pose without LocateViews"); }
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+      Fixture test; f = &test; tdvr::XrPanel panel(api());
+      if (scenario == 0) f->locate_result = XR_ERROR_SESSION_LOST;
+      if (scenario == 1) f->view_count = 1;
+      if (scenario == 2) f->locate_result = XR_SESSION_LOSS_PENDING;
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(!panel.views().available && panel.stats().stage == 7 && f->acquired == 0 && f->frame_ends == 1,
+          "failed LocateViews closes frame before acquisition"); }
+    { Fixture test; f = &test; tdvr::XrPanel panel(api());
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(panel.views().available, "initial pose before stop");
+      f->events.push_back(XR_SESSION_STATE_STOPPING);
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(!panel.views().available && f->located == 1, "session stop invalidates last pose"); }
     { Fixture test(DXGI_FORMAT_R8G8B8A8_TYPELESS); f = &test; tdvr::XrPanel panel(api());
       panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
       require(panel.stats().submitted == 1 && f->released == 1, "typeless XR storage rejected"); }

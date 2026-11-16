@@ -455,3 +455,10 @@ HRESULT WINAPI TdvrGetPanelStats(TdvrPanelStats* stats) {
         panel.source_format, panel.swapchain_format, panel.resource_format, panel.color_space, panel.failure_stage};
     return S_OK;
 }
+HRESULT WINAPI TdvrGetXrViews(TdvrXrViewSnapshot* snapshot) {
+    if (!snapshot || snapshot->size != sizeof(*snapshot) || snapshot->abi != 1) return E_INVALIDARG;
+    auto& s = state();
+    std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    *snapshot = s.panel ? s.panel->views() : TdvrXrViewSnapshot{sizeof(TdvrXrViewSnapshot), 1};
+    return S_OK;
+}

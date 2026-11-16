@@ -365,3 +365,36 @@ RGBA/BGRA swizzle; также отказ HDR/linear и сохранение ст
 quarantined=0, color space=0. Это успешный приём плоской панели runtime,
 не визуальная проверка, не независимое стерео и не тест комфорта.
 Итоговые локальные проверки: CTest 17/17, Python 16/16.
+
+
+### Позы глаз в собственной XR session
+
+XrPanel получает два XrView одним xrLocateViews после BeginFrame, до acquire,
+на predictedDisplayTime текущего кадра и в LOCAL space. Позы и независимые
+signed FOV проверяются существующим tdvr_build_stereo_frame; невалидные числа,
+quaternion или FOV не публикуются как доступный tracking. При valid, но
+untracked flags весь tracking packet недоступен; плоская панель продолжает
+работать. No-render, STOPPING и terminal error сбрасывают доступность.
+Ошибка LocateViews/неверное число views завершает frame без слоя и останавливает
+панель. Подробности API: [Khronos xrLocateViews](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrLocateViews.html).
+
+TdvrGetXrViews принимает size/ABI=1 (216 bytes), ничего не запускает и копирует
+snapshot под тем же mutex, который сериализует Present. CLI/MCP xr-views
+предоставляет эти данные без управления мышью. Frame id относится к XR,
+не доказывает синхронность симуляции; getter не является freshness monitor.
+
+Новые fake XR/WARP проверки покрывают точное время/space, один LocateViews
+на пару, отдельные положения и asymmetric FOV, потерю tracking, NaN/FOV,
+восстановление, no-render/STOPPING, session loss и неверное число views.
+Capture host дополнительно проверяет null/size/ABI и отсутствие поз по умолчанию.
+Собственная камера пока не использует эти позы: LocateViews выполняется на
+Present после игрового world render. Для полноценного VR нужно перенести
+начало XR-кадра перед render boundary, связать два прохода/targets и histories
+с одним состоянием симуляции. Режим остаётся плоской панелью.
+Новая сборка проверяется без реальной игры/runtime, пока пользователь играет
+обычную миссию; ранее подтверждённая в шлеме панель была предыдущей сборкой.
+
+Итог среза: Build-Native.ps1 -BuildDirectory build/native-trace, CTest 17/17,
+Python 16/16. Staging unittest теперь подменяет disk_usage и отдельно проверяет
+отказ до создания destination при недостатке места; реальный disk-space gate
+не ослаблен (0ef867e). Новый XR path не запускался в игре или шлеме.

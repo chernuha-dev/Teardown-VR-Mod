@@ -6,6 +6,7 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include <memory>
+#include "tdvr_tracking.h"
 
 namespace tdvr {
 // Explicit diagnostic: a flat game image on one quad, NOT stereo scene rendering.
@@ -31,6 +32,7 @@ struct PanelApi {
     PFN_xrAcquireSwapchainImage acquire = nullptr;
     PFN_xrWaitSwapchainImage wait_image = nullptr;
     PFN_xrReleaseSwapchainImage release = nullptr;
+    PFN_xrLocateViews locate_views = nullptr;
 };
 struct PanelStats {
     uint64_t frames = 0, submitted = 0;
@@ -51,6 +53,7 @@ public:
     // its source; a completed successful copy releases it before returning.
     void present(ID3D12CommandQueue* queue, ID3D12Resource* source, DXGI_COLOR_SPACE_TYPE color_space) noexcept;
     PanelStats stats() const noexcept;
+    TdvrXrViewSnapshot views() const noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

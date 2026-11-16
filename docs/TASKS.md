@@ -189,12 +189,23 @@ CTest 17/17, Python 16/16. Протокол и ограничения — CONTRO
 format 28, game_state=6, 170 valid / 0 rejected samples. Это наблюдение
 ресурса и render boundary; второй проход и независимые eye targets ещё не связаны.
 
+DEV-004/VR-103: собственная XR session теперь читает согласованную пару
+LocateViews на predictedDisplayTime. Owned pose/FOV snapshot доступен через
+TdvrGetXrViews и CLI/MCP xr-views, с обязательным available и XR frame id.
+Fake XR проверяет asymmetric FOV, позы, loss/invalid/recovery/no-render/stop;
+обычные capture hosts проверяют новый ABI и отсутствие запуска XR при чтении.
+Это подготовка tracking source: камера игры не потребляет эти позы, вызов
+пока на Present, stereo world rendering и руки не подключены. Проверка
+новой сборки в настоящем runtime отложена на время пользовательской миссии.
+Сборка build/native-trace и CTest 17/17 прошли; Python 16/16.
+Подробности и ограничения — BUILD.md / CONTROL_API.md.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).
 
-- [ ] VR-101: CPU stereo packet уже строит отдельные асимметричные view/projection, масштаб/IPD и обратные позы; проверены мировые точки/frustum edges/height/разные ориентации глаз. Реальные OpenXR views и игровой render pass ещё не подключены.
-- [ ] VR-102: CPU packet отвергает разные simulation id / predicted time и не публикует частичный результат. Источник общего состояния игры, два render pass и GPU submit ещё не реализованы; синхронность движка не доказана.
+- [ ] VR-101: CPU stereo packet уже строит отдельные асимметричные view/projection, масштаб/IPD и обратные позы; проверены мировые точки/frustum edges/height/разные ориентации глаз. Чтение OpenXR views добавлено в собственную panel session и проверено fake XR; новая сборка в runtime ещё не проверена, игровой eye render pass не подключён.
+- [ ] VR-102: CPU packet отвергает разные simulation id / predicted time и не публикует частичный результат. Источник общего состояния игры, два render pass и стерео GPU submit ещё не реализованы; синхронность движка не доказана.
 - [ ] VR-103: согласовать голову, тело, roomscale, рост, наклон, recenter и snap-turn; исключить двойной поворот/перемещение.
 - [ ] VR-104: сохранить качество графики игры по умолчанию; отдельно управлять разрешением VR и зеркала. Не компенсировать ошибку проекции ухудшением качества.
 - [ ] VR-105: собрать время CPU/GPU на кадр и пропуски на Quest 2 / RX 6900 XT; подобрать частоту и разрешение по измерениям, не обещать FPS заранее.

@@ -1,13 +1,15 @@
 #pragma once
 #include <windows.h>
 #include <cstdint>
+#include "tdvr_tracking.h"
 #ifdef TDVR_CAPTURE_BUILD
 #define TDVR_CAPTURE_API __declspec(dllexport)
 #else
 #define TDVR_CAPTURE_API __declspec(dllimport)
 #endif
 
-// Standalone diagnostic ABI. No legacy Lua bridge, runtime, camera or engine hooks.
+// Own diagnostic ABI, independent of the legacy Lua bridge. XR starts only
+// through explicit panel opt-in; reading any stats never starts a runtime.
 struct TdvrCaptureStats {
     uint32_t size;
     uint32_t abi;
@@ -34,6 +36,9 @@ TDVR_CAPTURE_API HRESULT WINAPI TdvrStartCapture();
 // Opt-in before startup. This enables a FLAT quad, not stereo game rendering.
 TDVR_CAPTURE_API HRESULT WINAPI TdvrEnableXrPanel();
 TDVR_CAPTURE_API HRESULT WINAPI TdvrGetPanelStats(TdvrPanelStats* stats);
+// Returns only the latest current XR observation. available=0 invalidates old
+// poses after no-render/tracking loss/session stop/error. Never starts runtime.
+TDVR_CAPTURE_API HRESULT WINAPI TdvrGetXrViews(TdvrXrViewSnapshot* snapshot);
 // Optional development profile, configured before startup. Redirects this child's
 // AppData/Documents queries and environment; never changes the user's folders.
 TDVR_CAPTURE_API HRESULT WINAPI TdvrConfigureDevelopmentProfile(const wchar_t* root);
