@@ -1,0 +1,11 @@
+/local/
+/build/
+/dist/
+/out/
+/.vs/
+/.idea/
+*.log
+*.pdb
+*.ilk
+*.obj
+__pycache__/

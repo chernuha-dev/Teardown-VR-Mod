@@ -1,0 +1,57 @@
+{
+  "source": "User-provided Teardown VR v0.22 MIT release package",
+  "files": [
+    {
+      "path": "mod/hands_blocky.vox",
+      "sha256": "0321df85962760fa4969af9d0e1e42855f2cc588ab68ed0639082d67f079f537"
+    },
+    {
+      "path": "mod/hands_glove.vox",
+      "sha256": "503df5f3ec081151cb67f7ad7f6421f0269ccab054151784b0f38191f3e6f68c"
+    },
+    {
+      "path": "mod/hands_skin.vox",
+      "sha256": "fd85486176bb52f906d4a41a18c0fb99f746dfd28651ba3d7aac50e74ff68f00"
+    },
+    {
+      "path": "mod/info.txt",
+      "sha256": "0ce101a547311726d1a89869724aba68bd7c9809c9aad7001e11ebb5322c05a4"
+    },
+    {
+      "path": "mod/main.lua",
+      "sha256": "eb88ad8e8dd73b3e6a220b286d0ccc61382eb0fe46eac762c65a3216489a8692"
+    },
+    {
+      "path": "mod/preview.jpg",
+      "sha256": "fba4d235a3f6bdcb97beba4550c8685ac2db26626deaff3c74c5e7baac1c022c"
+    },
+    {
+      "path": "vendor/v0.22/dxgi.dll",
+      "sha256": "34d655c17270c6f94ee372d241683a7317effd793dcb1f36374759a65ddaaae7"
+    },
+    {
+      "path": "upstream/v0.22/Install.bat",
+      "sha256": "2caadb37da35e12d2ee23b2da598c8150bd646ec497e17f77d593eb5e205f4a3"
+    },
+    {
+      "path": "upstream/v0.22/install_release.ps1",
+      "sha256": "9bd4c577544ed54ad98679da771442fb82dc20a03f5248841b0baa28cb8ad1f2"
+    },
+    {
+      "path": "upstream/v0.22/preview.jpg",
+      "sha256": "fba4d235a3f6bdcb97beba4550c8685ac2db26626deaff3c74c5e7baac1c022c"
+    },
+    {
+      "path": "upstream/v0.22/README.md",
+      "sha256": "6639086e9787378d2edd91892dc3bd4b3e906d0d1adea579633672121844c1c9"
+    },
+    {
+      "path": "upstream/v0.22/Uninstall.bat",
+      "sha256": "df6e8482285dbdc984f56a63626d9cb442e5567898a53155ccaddcf73479241b"
+    },
+    {
+      "path": "upstream/v0.22/uninstall_release.ps1",
+      "sha256": "f6c7505206229e0dcf6835cca980d67431aedf50ef8f31b61db14b5e43771126"
+    }
+  ]
+}
