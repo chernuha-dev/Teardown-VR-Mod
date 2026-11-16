@@ -18,3 +18,38 @@ if(MSVC)
 endif()
 add_test(NAME stereo_frame_contract COMMAND tdvr_frame_tests)
 
+option(TDVR_BUILD_DIAGNOSTICS "Build Windows OpenXR/D3D12 standalone diagnostics" ON)
+if(WIN32 AND TDVR_BUILD_DIAGNOSTICS)
+  include(cmake/OpenXR.cmake)
+  add_library(tdvr_d3d12_probe STATIC native/src/d3d12_probe.cpp)
+  target_include_directories(tdvr_d3d12_probe PUBLIC native/include)
+  target_compile_features(tdvr_d3d12_probe PUBLIC cxx_std_17)
+  target_compile_definitions(tdvr_d3d12_probe PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_link_libraries(tdvr_d3d12_probe PUBLIC d3d12 dxgi dxguid)
+
+  add_library(tdvr_openxr_probe STATIC native/src/openxr_probe.cpp)
+  target_include_directories(tdvr_openxr_probe PUBLIC native/include)
+  target_compile_features(tdvr_openxr_probe PUBLIC cxx_std_17)
+  target_compile_definitions(tdvr_openxr_probe PUBLIC XR_USE_PLATFORM_WIN32 XR_USE_GRAPHICS_API_D3D12
+    NOMINMAX WIN32_LEAN_AND_MEAN PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_link_libraries(tdvr_openxr_probe PUBLIC OpenXR::headers)
+
+  add_executable(tdvr_diagnostic native/src/diagnostic_main.cpp)
+  target_link_libraries(tdvr_diagnostic PRIVATE tdvr_d3d12_probe tdvr_openxr_probe openxr_loader)
+  add_executable(tdvr_openxr_probe_tests native/tests/openxr_probe_tests.cpp)
+  target_link_libraries(tdvr_openxr_probe_tests PRIVATE tdvr_openxr_probe)
+  target_compile_definitions(tdvr_openxr_probe_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+  add_executable(tdvr_d3d12_tests native/tests/d3d12_tests.cpp)
+  target_link_libraries(tdvr_d3d12_tests PRIVATE tdvr_d3d12_probe)
+  foreach(target tdvr_d3d12_probe tdvr_openxr_probe tdvr_diagnostic tdvr_openxr_probe_tests tdvr_d3d12_tests)
+    target_compile_options(${target} PRIVATE /W4 /WX /permissive-)
+  endforeach()
+  add_test(NAME openxr_preflight_fake COMMAND tdvr_openxr_probe_tests)
+  add_test(NAME d3d12_warp_readback COMMAND tdvr_d3d12_tests --warp)
+  set_tests_properties(d3d12_warp_readback PROPERTIES TIMEOUT 30)
+  add_custom_command(TARGET tdvr_diagnostic POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      ${CMAKE_SOURCE_DIR}/native/licenses $<TARGET_FILE_DIR:tdvr_diagnostic>/licenses
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_SOURCE_DIR}/native/THIRD-PARTY-NOTICES.md
+      $<TARGET_FILE_DIR:tdvr_diagnostic>/THIRD-PARTY-NOTICES.md)
+endif()

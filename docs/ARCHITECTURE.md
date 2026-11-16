@@ -157,3 +157,18 @@ Lua не содержит законченного VR меню/HUD.
 проверяемые per-eye view/projection, один simulation snapshot, два render pass,
 правильные D3D12 barriers/fences и OpenXR swapchains/session lifecycle.
 Новое ядро проверяет только математику, не реализует эти перехваты.
+
+## Собственный диагностический срез (2026-11-16)
+
+`tdvr_frame.h` задаёт отдельный C++ CPU-контракт: принадлежащий вызывающему
+коду пакет обоих глаз, общий simulation id / predicted display time, world pose,
+inverse view и независимые asymmetric projection. Не использовать его как
+v0.22 memory bridge. Все tracking flags и метки проверяются до публикации
+целого результата; синхронизацию producer/consumer и freeze движка это не заменяет.
+
+`tdvr_diagnostic.exe` работает отдельным процессом. OpenXR dispatch содержит
+только instance/system/view configuration/graphics requirements; session/frame
+entry points отсутствуют. D3D12 backend создаёт собственные два тестовых targets,
+barriers/fence/readback и проверяет каждый пиксель. Он не читает game targets.
+Статическая диагностика EXE обнаруживает OpenGL/SwapBuffers, поэтому выбор
+игрового backend/interop пока открыт — см. ENGINE_COMPATIBILITY.md.

@@ -1,4 +1,4 @@
-# Нативная сборка: первый срез DEV-004
+# Нативная сборка и диагностический стенд DEV-004
 
 `tdvr_math.dll` — собственное математическое ядро, **не игровой VR-модуль**.
 Оно не экспортирует DXGI, не сканирует память, не создаёт OpenXR session,
@@ -7,7 +7,14 @@
 ## Зависимости и запуск
 
 Windows x64, Visual Studio 2022 Build Tools с C++ x64/x86, Windows SDK,
-CMake >= 3.24 и CTest. Внешних библиотек у ядра нет.
+CMake >= 3.24 и CTest. У математического ядра внешних библиотек нет.
+Стенд использует OpenXR SDK release-1.1.53 с проверяемым SHA-256 архива
+(cmake/OpenXR.cmake); первая сборка требует сети. Loader собирается статически,
+JsonCpp берётся из того же архива. Лицензии копируются к executable;
+оригинальные LICENSE и THIRD-PARTY-NOTICES.txt сохранены.
+GPU-проверка требует ID3D12Device5::RemoveDevice для ограниченного по времени
+аварийного завершения: Windows build >= 20348; здесь проверено на 22631.
+Для сборки одной математики: `-DTDVR_BUILD_DIAGNOSTICS=OFF`.
 
 ```powershell
 powershell -NoProfile -File scripts/Build-Native.ps1
@@ -57,3 +64,61 @@ DEV-004 остаётся открытой для интеграции OpenXR/D3D
 `scripts/Verify-Baseline.ps1` сравнивает рабочие файлы с первоначальным
 импортом и после изменения Lua закономерно сообщает отличие main.lua.
 Оригинальные SHA-256 и commit ef5b657 сохраняются, манифест не переписывается.
+
+## Диагностика без шлема (2026-11-16)
+
+```powershell
+build/native/Release/tdvr_diagnostic.exe --gpu --warp
+build/native/Release/tdvr_diagnostic.exe --gpu
+build/native/Release/tdvr_diagnostic.exe --runtime
+build/native/Release/tdvr_d3d12_tests.exe --hardware
+```
+
+Без аргументов / с `--help` выводится справка. `--gpu` не вызывает OpenXR.
+Создаются direct queue и два отдельных RGBA8 render targets 17×13; каждый
+очищается своим цветом, переводится barrier в COPY_SOURCE и копируется в свой
+readback buffer. После fence проверяются все 221 пиксель каждого глаза с учётом
+RowPitch=256. Это проверка операций GPU, а не рендер сцены/проекций.
+Ожидание fence ограничено 5 секундами; при отказе незавершённая работа
+прерывается RemoveDevice перед освобождением ресурсов. Этот код допускается
+только в отдельном диагностическом процессе, не внутри игрового рендерера.
+
+`--runtime` может запустить установленный runtime. Он создаёт OpenXR instance,
+проверяет XR_KHR_D3D12_enable, HMD system, primary stereo и размеры двух views,
+получает обязательные adapter LUID и minFeatureLevel. Затем GPU-проверка
+выбирает точно этот адаптер, без подмены WARP/другой видеокартой. Instance
+освобождается и при промежуточных ошибках. Коды: 0 — preflight/GPU проверка
+успешна, 2 — runtime/HMD/возможность недоступны, 1 — ошибка. Код 0 не означает
+готовность игрового VR. Session, spaces, swapchains и frame submission отсутствуют.
+
+Фактически проверено: SteamVR/OpenXR 2.18.4, HMD system `oculus`, требование
+FL 12_0; RX 6900 XT поддерживает FL 12_2 и проходит readback. Рекомендованные
+runtime размеры 3664×4028 для каждого глаза только прочитаны; настройки
+разрешения/качества не менялись. Результат не измеряет FPS и комфорт.
+
+CTest: 4/4 (исходная математика, stereo packet, fake OpenXR, WARP readback).
+Python: 8/8 (3 Lua + 5 PE). Fake OpenXR проверяет успех, отсутствие runtime/HMD/
+extension/stereo, неправильные view sizes/count, null proc, ошибки требований/
+cleanup и ограниченные повторы при изменении enumeration count. Он не загружает
+реальный runtime, поэтому обычная сборка не требует шлема и SteamVR.
+
+## Контракт stereo packet
+
+`tdvr_build_stereo_frame` строит принадлежащий вызывающему коду пакет с двумя
+независимыми view/projection. Оба входных глаза обязаны иметь общий simulation
+id и predicted display time; требуется валидное отслеживаемое положение и
+ориентация. Ошибка одного глаза оставляет весь выход неизменным. Кватернионы
+нормализуются в пределах допуска, масштаб применяется к переносу и clip planes.
+Tracking origin задаётся явно: нельзя повторно прибавлять абсолютную высоту
+шлема к уже заданной игровой высоте глаз. Тесты проверяют известные мировые
+точки, асимметричные frustum edges, inverse view, разные ориентации глаз, IPD,
+масштаб, высоту и отказ при смешивании меток кадров.
+
+Общий id — проверяемый контракт производителя данных, а не доказательство
+заморозки игры. Публикация между потоками, реальный OpenXR locate/predict и
+два render pass из одного состояния движка ещё не реализованы.
+
+Описание требований API:
+[OpenXR D3D12 requirements](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrGetD3D12GraphicsRequirementsKHR.html),
+[copy footprints](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device-getcopyablefootprints),
+[RemoveDevice](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device5-removedevice).
