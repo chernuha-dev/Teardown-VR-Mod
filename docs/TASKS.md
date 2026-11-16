@@ -212,6 +212,16 @@ XR id/time, flags/ABI, численные значения и float precision. �
 Build-Native.ps1, CTest 18/18, Python 16/16; PE imports capture не требуют
 отдельной tdvr_math.dll.
 
+DEV-004/VR-102: --xr-world-timing связывает gated engine world hook с собственным
+capture export: Wait/Begin/LocateViews перед оригинальным world render,
+copy/release/End на Present. Отдельный development-only opt-in; обычная панель
+сохраняет прежний timing. Пока это один штатный world render и плоский quad,
+без eye camera override, freeze или изоляции histories. Fake XR/WARP покрывает
+split lifecycle, duplicate/no-render/stop/error/cleanup; runtime/game проверка
+нового режима отложена до окончания пользовательской миссии. Команды и
+ограничения — BUILD.md. Проверки: CTest 18/18, Python 16/16, launcher
+отвергает отсутствие profile до создания процесса. VR-102 остаётся открытой.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

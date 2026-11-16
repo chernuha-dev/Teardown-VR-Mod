@@ -61,8 +61,10 @@ struct XrPanel::Impl {
     DXGI_FORMAT target_format = DXGI_FORMAT_UNKNOWN;
     uint64_t fence_value = 0;
     bool running = false, frame = false, terminal = false, gpu_pending = false;
+    bool world_timing = false, should_render = false;
+    DWORD present_thread = 0;
     XrTime display_time = 0;
-    explicit Impl(const PanelApi& value) : api(value) {}
+    Impl(const PanelApi& value, bool timing) : api(value), world_timing(timing) {}
     bool valid_api() const {
         return api.create_instance && api.destroy_instance && api.get_system && api.get_proc
             && api.create_session && api.destroy_session && api.formats && api.create_swapchain
@@ -71,6 +73,7 @@ struct XrPanel::Impl {
             && api.begin_frame && api.end_frame && api.acquire && api.wait_image && api.release && api.locate_views;
     }
     void cleanup() noexcept {
+        observed.available = 0;
         if (gpu_pending) { report.quarantined = true; return; }
         auto cleaned = [&](XrResult result) {
             if (result != XR_SUCCESS) {
@@ -180,7 +183,7 @@ struct XrPanel::Impl {
                 XrSessionBeginInfo begin{}; begin.type = XR_TYPE_SESSION_BEGIN_INFO; begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                 xrcheck(api.begin_session(session, &begin)); running = true;
             } else if (changed.state == XR_SESSION_STATE_STOPPING && running) {
-                xrcheck(api.end_session(session)); running = false;
+                xrcheck(api.end_session(session)); running = false; observed.available = 0;
             } else if (changed.state == XR_SESSION_STATE_EXITING || changed.state == XR_SESSION_STATE_LOSS_PENDING) {
                 terminal = true; return;
             }
@@ -220,7 +223,8 @@ struct XrPanel::Impl {
         }
         observed = candidate;
     }
-    void render(ID3D12Resource* source) {
+    void begin_frame() {
+        observed = {sizeof(TdvrXrViewSnapshot), 1};
         report.stage = 3;
         XrFrameWaitInfo wait{}; wait.type = XR_TYPE_FRAME_WAIT_INFO;
         XrFrameState state{}; state.type = XR_TYPE_FRAME_STATE;
@@ -229,9 +233,12 @@ struct XrPanel::Impl {
         const auto begun = api.begin_frame(session, &begin);
         if (begun != XR_SUCCESS && begun != XR_FRAME_DISCARDED) throw XrFailure{begun};
         frame = true; ++report.frames;
+        should_render = state.shouldRender != XR_FALSE;
+        if (should_render) locate_views();
+    }
+    void render(ID3D12Resource* source) {
         XrCompositionLayerQuad quad{}; quad.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
-        if (state.shouldRender) {
-            locate_views(); // One coherent pair at this frame's predicted time.
+        if (should_render) {
             uint32_t index = 0;
             XrSwapchainImageAcquireInfo acquire{}; acquire.type = XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO;
             xrcheck(api.acquire(swapchain, &acquire, &index));
@@ -266,34 +273,55 @@ struct XrPanel::Impl {
         const auto* layer = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
         XrFrameEndInfo end{}; end.type = XR_TYPE_FRAME_END_INFO; end.displayTime = display_time;
         end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-        end.layerCount = state.shouldRender ? 1u : 0u; end.layers = state.shouldRender ? &layer : nullptr;
+        end.layerCount = should_render ? 1u : 0u; end.layers = should_render ? &layer : nullptr;
         frame = false; // EndFrame is attempted exactly once, including failure.
         xrcheck(api.end_frame(session, &end));
-        if (state.shouldRender) ++report.submitted;
+        if (should_render) ++report.submitted;
     }
 };
-XrPanel::XrPanel(const PanelApi& api) : impl_(std::make_unique<Impl>(api)) {}
+XrPanel::XrPanel(const PanelApi& api, bool world_timing) : impl_(std::make_unique<Impl>(api, world_timing)) {}
 XrPanel::~XrPanel() {
     impl_->cleanup();
     if (impl_->gpu_pending) impl_.release(); // Quarantine runtime + GPU allocations until process exit.
 }
 PanelStats XrPanel::stats() const noexcept { return impl_->report; }
 TdvrXrViewSnapshot XrPanel::views() const noexcept { return impl_->observed; }
+bool XrPanel::begin_world_frame() noexcept {
+    auto& p = *impl_;
+    if (!p.world_timing || p.terminal || !p.instance || p.frame) return false;
+    p.observed = {sizeof(TdvrXrViewSnapshot), 1};
+    try {
+        if (GetCurrentThreadId() != p.present_thread) throw GpuFailure{E_ACCESSDENIED};
+        p.events();
+        if (p.terminal) { p.report.stage = 6; p.cleanup(); return false; }
+        if (!p.running) return false;
+        p.begin_frame();
+        return true;
+    } catch (const XrFailure& error) { p.report.xr = error.result; }
+      catch (const GpuFailure& error) { p.report.gpu = error.result; }
+      catch (...) { p.report.gpu = E_FAIL; }
+    p.terminal = true; p.observed.available = 0;
+    p.report.failure_stage = p.report.stage; p.report.stage = 7; p.cleanup();
+    return false;
+}
 void XrPanel::present(ID3D12CommandQueue* queue, ID3D12Resource* source, DXGI_COLOR_SPACE_TYPE color_space) noexcept {
     auto& p = *impl_;
-    p.observed = {sizeof(TdvrXrViewSnapshot), 1};
+    if (!p.world_timing) p.observed = {sizeof(TdvrXrViewSnapshot), 1};
     if (p.terminal) return;
     try {
         p.report.color_space = color_space;
         if (color_space != DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709) throw GpuFailure{DXGI_ERROR_UNSUPPORTED};
-        if (!p.instance) p.initialize(queue, source);
+        if (!p.instance) { p.initialize(queue, source); p.present_thread = GetCurrentThreadId(); }
+        if (p.world_timing && GetCurrentThreadId() != p.present_thread) throw GpuFailure{E_ACCESSDENIED};
         if (queue != p.queue.Get() || !source) throw GpuFailure{E_INVALIDARG};
         const auto desc = source->GetDesc();
         if (desc.Width != p.source_desc.Width || desc.Height != p.source_desc.Height || desc.Format != p.source_desc.Format)
             throw GpuFailure{DXGI_ERROR_UNSUPPORTED}; // Resize requires an explicit fresh process in this diagnostic.
-        p.events();
+        // Never poll STOPPING/end-session between an external Begin and EndFrame.
+        if (!p.frame) p.events();
         if (p.terminal) { p.report.stage = 6; p.cleanup(); return; }
-        if (p.running) p.render(source);
+        if (!p.world_timing && p.running) p.begin_frame();
+        if (p.frame) p.render(source);
     } catch (const XrFailure& error) { p.report.xr = error.result; p.terminal = true; }
       catch (const GpuFailure& error) { p.report.gpu = error.result; p.terminal = true; }
       catch (...) { p.report.gpu = E_FAIL; p.terminal = true; }

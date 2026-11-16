@@ -52,6 +52,7 @@ struct State {
     bool started = false;
     bool profile_only = false;
     bool panel_enabled = false, panel_busy = false;
+    bool world_timing = false;
     IDXGISwapChain* panel_owner = nullptr; // observation only, does not retain the swapchain
     std::unique_ptr<tdvr::XrPanel> panel;
     std::wstring profile;
@@ -220,7 +221,7 @@ void observe_present(IDXGISwapChain* object, UINT flags) noexcept {
         s.panel_owner = object;
         s.panel_busy = true;
         try {
-            if (!s.panel) s.panel = std::make_unique<tdvr::XrPanel>(tdvr::panel_loader_api());
+            if (!s.panel) s.panel = std::make_unique<tdvr::XrPanel>(tdvr::panel_loader_api(), s.world_timing);
             ComPtr<IDXGISwapChain3> current;
             s.stats.last_hresult = object->QueryInterface(IID_PPV_ARGS(&current));
             if (SUCCEEDED(s.stats.last_hresult)) {
@@ -454,6 +455,24 @@ HRESULT WINAPI TdvrGetPanelStats(TdvrPanelStats* stats) {
         panel.frames, panel.submitted, panel.xr, panel.gpu, panel.quarantined ? 1u : 0u, 0,
         panel.source_format, panel.swapchain_format, panel.resource_format, panel.color_space, panel.failure_stage};
     return S_OK;
+}
+HRESULT WINAPI TdvrEnableXrWorldTiming() {
+    auto& s = state();
+    std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    if (s.started || s.profile_only || s.profile.empty()) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.world_timing) return S_FALSE;
+    if (!SetEnvironmentVariableW(L"TDVR_XR_WORLD_TIMING", L"1")) return HRESULT_FROM_WIN32(GetLastError());
+    s.panel_enabled = true; s.world_timing = true;
+    return S_OK;
+}
+HRESULT WINAPI TdvrBeginXrWorldFrame(void*) {
+    auto& s = state();
+    std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    if (!s.world_timing || !s.panel || s.panel_busy) return S_FALSE;
+    s.panel_busy = true;
+    const auto begun = s.panel->begin_world_frame();
+    s.panel_busy = false;
+    return begun ? S_OK : S_FALSE;
 }
 HRESULT WINAPI TdvrGetXrViews(TdvrXrViewSnapshot* snapshot) {
     if (!snapshot || snapshot->size != sizeof(*snapshot) || snapshot->abi != 1) return E_INVALIDARG;

@@ -35,6 +35,10 @@ extern "C" {
 TDVR_CAPTURE_API HRESULT WINAPI TdvrStartCapture();
 // Opt-in before startup. This enables a FLAT quad, not stereo game rendering.
 TDVR_CAPTURE_API HRESULT WINAPI TdvrEnableXrPanel();
+// Explicit development mode. Requires configured profile; begins each XR frame
+// from the audited world-render hook, while Present still submits a flat quad.
+TDVR_CAPTURE_API HRESULT WINAPI TdvrEnableXrWorldTiming();
+TDVR_CAPTURE_API HRESULT WINAPI TdvrBeginXrWorldFrame(void* unused);
 TDVR_CAPTURE_API HRESULT WINAPI TdvrGetPanelStats(TdvrPanelStats* stats);
 // Returns only the latest current XR observation. available=0 invalidates old
 // poses after no-render/tracking loss/session stop/error. Never starts runtime.

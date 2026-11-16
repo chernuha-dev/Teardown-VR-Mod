@@ -85,11 +85,13 @@ int wmain(int argc, wchar_t** argv) {
         // This launcher never attaches to an existing process or the user's VR app.
         const bool trace = argc >= 4 && std::wstring(argv[argc-1]) == L"--trace";
         const bool profile_only = argc >= 4 && std::wstring(argv[argc-1]) == L"--profile-only";
-        const bool xr_panel = argc >= 4 && std::wstring(argv[argc-1]) == L"--xr-panel";
+        const bool xr_world = argc >= 4 && std::wstring(argv[argc-1]) == L"--xr-world-timing";
+        const bool xr_panel = xr_world || (argc >= 4 && std::wstring(argv[argc-1]) == L"--xr-panel");
         const int positional = argc - ((trace || profile_only || xr_panel) ? 1 : 0);
         if (profile_only && positional != 4) throw std::runtime_error("--profile-only requires a development profile");
+        if (xr_world && positional != 4) throw std::runtime_error("--xr-world-timing requires a development profile");
         if (positional != 3 && positional != 4) {
-            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile] [--trace|--profile-only|--xr-panel]\n"
+            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile] [--trace|--profile-only|--xr-panel|--xr-world-timing]\n"
                 << "XR panel is an opt-in FLAT game screen, not stereo VR. Profile-only leaves rendering to child modules.\n";
             return argc == 1 ? 0 : 2;
         }
@@ -106,7 +108,7 @@ int wmain(int argc, wchar_t** argv) {
         const auto getstats = GetProcAddress(local, "TdvrGetCaptureStats");
         const auto configure = GetProcAddress(local, "TdvrConfigureDevelopmentProfile");
         const auto start_profile = GetProcAddress(local, "TdvrStartDevelopmentProfile");
-        const auto enable_panel = GetProcAddress(local, "TdvrEnableXrPanel");
+        const auto enable_panel = GetProcAddress(local, xr_world ? "TdvrEnableXrWorldTiming" : "TdvrEnableXrPanel");
         const auto get_panel = GetProcAddress(local, "TdvrGetPanelStats");
         const auto enable_trace = GetProcAddress(local, "TdvrEnableRenderTrace");
         const auto get_trace = GetProcAddress(local, "TdvrGetRenderTrace");
@@ -215,6 +217,7 @@ int wmain(int argc, wchar_t** argv) {
         if (xr_panel && FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess,
             remote_dll + enable_panel_rva, nullptr, "enable flat XR panel"))))
             throw std::runtime_error("XR panel configuration failed");
+        if (xr_world) std::cout << "XR world timing: attach the audited development engine probe; Present alone will not begin frames. Output remains a FLAT quad.\n";
         if (trace && FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess,
             remote_dll + enable_trace_rva, nullptr, "enable render trace"))))
             throw std::runtime_error("render trace configuration failed");

@@ -86,6 +86,8 @@ int main(int argc, char** argv) {
     require(TdvrGetRenderTrace(&snapshot) == E_INVALIDARG, "bad trace ABI accepted");
     require(TdvrResetRenderTrace(nullptr) == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "unconfigured trace reset accepted");
     if (trace) check(TdvrEnableRenderTrace(nullptr), "enable render tracing");
+    require(TdvrEnableXrWorldTiming() == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "world timing accepted without profile or after startup");
+    require(TdvrBeginXrWorldFrame(nullptr) == S_FALSE, "default capture began an XR world frame");
 #endif
     TdvrCaptureStats invalid{};
     TdvrPanelStats panel{};

@@ -11,6 +11,7 @@
 #include <vector>
 #include <limits>
 #include <cmath>
+#include <thread>
 using Microsoft::WRL::ComPtr;
 namespace {
 void require(bool condition, const char* message) { if (!condition) { std::cerr << message << '\n'; std::exit(1); } }
@@ -159,6 +160,46 @@ tdvr::PanelApi api() { return {create_instance, destroy_instance, get_system, ge
     wait_frame, begin_frame, end_frame, acquire, wait_image, release, locate_views}; }
 }
 int main() {
+    { Fixture test; f = &test; tdvr::XrPanel panel(api(), true);
+      require(!panel.begin_world_frame() && f->begins == 0, "world begin started runtime before graphics initialization");
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(f->begins == 1 && panel.stats().frames == 0 && f->located == 0, "first Present must only initialize world timing");
+      require(panel.begin_world_frame() && panel.views().available && f->located == 1 && f->frame_ends == 0 && f->acquired == 0,
+          "XR views must precede world render and GPU copy");
+      const auto pair = panel.views();
+      require(!panel.begin_world_frame() && f->located == 1 && panel.views().frame_id == pair.frame_id, "duplicate world begin reopened XR frame");
+      // Simulated original world render occurs here, once. End/Acquire are still absent.
+      require(panel.stats().frames == 1 && f->frame_ends == 0, "frame ended before world render");
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(f->located == 1 && f->frame_ends == 1 && panel.stats().submitted == 1, "Present must finish exactly the located frame");
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(f->frame_ends == 1 && panel.stats().frames == 1, "Present without world render began an extra frame");
+      f->render = false;
+      require(panel.begin_world_frame() && !panel.views().available && f->located == 1, "no-render external frame mishandled");
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(f->frame_ends == 2 && f->acquired == 1 && panel.stats().submitted == 1, "no-render frame must end without a quad"); }
+    { Fixture test; f = &test; tdvr::XrPanel panel(api(), true);
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      std::thread other([&] { require(!panel.begin_world_frame(), "wrong-thread world begin accepted"); }); other.join();
+      require(panel.stats().stage == 7 && panel.stats().gpu == E_ACCESSDENIED && f->located == 0, "thread mismatch must fail before XR frame"); }
+    { Fixture test; f = &test; { tdvr::XrPanel panel(api(), true);
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(panel.begin_world_frame(), "external begin before destructor");
+      } require(f->frame_ends == 1 && !f->acquired && !f->quads, "abandoned world frame must end empty on cleanup"); }
+    { Fixture test; f = &test; tdvr::XrPanel panel(api(), true);
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(panel.begin_world_frame(), "begin before STOPPING event");
+      f->events.push_back(XR_SESSION_STATE_STOPPING);
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(f->frame_ends == 1 && f->ends == 0, "session ended while world frame still open");
+      require(!panel.begin_world_frame() && f->ends == 1 && !panel.views().available, "STOPPING must clear world tracking"); }
+    { Fixture test; f = &test; tdvr::XrPanel panel(api(), true);
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(panel.begin_world_frame(), "begin before copy failure");
+      f->image_wait_result = XR_TIMEOUT_EXPIRED;
+      panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+      require(panel.stats().stage == 7 && f->frame_ends == 1 && f->released == 0 && !panel.views().available,
+          "external frame copy failure must end empty and invalidate views"); }
     { Fixture test; f = &test; tdvr::XrPanel panel(api());
       require(!panel.views().available, "tracking available before any frame");
       panel.present(f->queue.Get(), f->source.Get(), DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);

@@ -44,7 +44,7 @@ struct PanelStats {
 };
 class XrPanel {
 public:
-    explicit XrPanel(const PanelApi& api);
+    explicit XrPanel(const PanelApi& api, bool world_timing = false);
     ~XrPanel();
     XrPanel(const XrPanel&) = delete;
     XrPanel& operator=(const XrPanel&) = delete;
@@ -54,6 +54,10 @@ public:
     void present(ID3D12CommandQueue* queue, ID3D12Resource* source, DXGI_COLOR_SPACE_TYPE color_space) noexcept;
     PanelStats stats() const noexcept;
     TdvrXrViewSnapshot views() const noexcept;
+    // Opt-in only: after first Present initializes graphics/session, begin XR
+    // before the audited world render. Matching Present finishes this frame.
+    // False before initialization, while already begun, stopped, or failed.
+    bool begin_world_frame() noexcept;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;

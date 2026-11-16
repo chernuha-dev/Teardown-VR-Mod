@@ -27,12 +27,14 @@ constexpr std::array<unsigned char, 32> observed_hash{{
     0x61,0x47,0xc3,0x04,0x26,0x6b,0x4b,0x0a,0xdd,0xa0,0x1b,0xd9,0x8c,0xaa,0x2c,0x4d}};
 using SetCamera = void (*)(void*, const float*, const float*);
 using WorldRender = void (*)(void*, void*, void*, void*);
+using BeginXrWorld = HRESULT (WINAPI*)(void*);
 struct State {
     std::mutex mutex;
     std::atomic<uint64_t> calls{0};
     TdvrEngineStats stats{sizeof(TdvrEngineStats), 1};
     SetCamera original = nullptr;
     WorldRender world_original = nullptr;
+    BeginXrWorld begin_xr_world = nullptr; // immutable before hooks are enabled
     std::atomic<uint64_t> world_calls{0}, world_completed{0};
     TdvrWorldRenderStats world_stats{sizeof(TdvrWorldRenderStats), 1};
     TdvrEngineTargetStats target_stats{sizeof(TdvrEngineTargetStats), 1};
@@ -196,7 +198,7 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     uintptr_t game = 0;
     bool valid = false, main_camera = false;
     const bool pending = s.override_pending.load(std::memory_order_acquire);
-    if (sample || pending) {
+    if (sample || pending || s.begin_xr_world) {
         valid = read(camera_object, before, sizeof(before))
             && read(static_cast<char*>(scene)+0x2208, &state_before, sizeof(state_before));
         for (const float value : before) if (!std::isfinite(value)) valid = false;
@@ -217,6 +219,16 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
             }
         } else ++s.override_stats.rejected_calls;
         s.override_pending.store(s.override_camera.remaining(GetTickCount64()) != 0, std::memory_order_release);
+    }
+    if (s.begin_xr_world && valid && main_camera) {
+        bool same_thread = false;
+        {
+            std::lock_guard<std::mutex> lock(s.mutex);
+            same_thread = !s.world_stats.first_thread || GetCurrentThreadId() == s.world_stats.first_thread;
+        }
+        // Called before the original world render, without the engine stats lock.
+        // This opt-in changes XR frame timing only, not camera/simulation/history.
+        if (same_thread) s.begin_xr_world(nullptr);
     }
     // No replay or skipped simulation. Never hold the stats mutex across engine
     // code. On opt-in, the original sees one selected eye; RAII restores the camera.
@@ -281,6 +293,11 @@ HRESULT WINAPI TdvrStartEngineProbe(void*) {
     if (!read(world_target, world_bytes.data(), world_bytes.size()) || world_bytes != world_prefix)
         return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     s.world_stats.signature_matched = 1;
+    wchar_t xr_timing[2]{};
+    if (GetEnvironmentVariableW(L"TDVR_XR_WORLD_TIMING", xr_timing, 2) == 1 && xr_timing[0] == L'1' && development_process()) {
+        const auto capture = GetModuleHandleW(L"tdvr_capture.dll");
+        if (capture) s.begin_xr_world = reinterpret_cast<BeginXrWorld>(GetProcAddress(capture, "TdvrBeginXrWorldFrame"));
+    }
     HMODULE module = nullptr;
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
         reinterpret_cast<LPCWSTR>(&TdvrStartEngineProbe), &module)) return HRESULT_FROM_WIN32(GetLastError());

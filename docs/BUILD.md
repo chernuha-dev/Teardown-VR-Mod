@@ -432,3 +432,53 @@ NaN справа и потерю depth precision при переводе в floa
 Проверено: Build-Native.ps1 -BuildDirectory build/native-trace, CTest 18/18,
 Python 16/16. PE import audit собранной tdvr_capture.dll подтвердил отсутствие
 зависимости на tdvr_math.dll. Игра/OpenXR/runtime в этом срезе не запускались.
+
+
+### Opt-in XR begin перед world render
+
+Новый режим --xr-world-timing требует development profile. Запускать только
+после разрешения пользовательских runtime-проверок, без другой VR-игры:
+
+```powershell
+build/native-trace/Release/tdvr_capture_launcher.exe <development-exe> <absolute-tdvr_capture.dll> <development-profile> --xr-world-timing
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --dll build/native-trace/Release/tdvr_engine_probe.dll --world-render
+```
+
+Это подготовка timing, а не включение stereo world rendering. Первый Present
+только создаёт device-bound XR session/swapchain и обрабатывает READY. Без
+подключённого engine observer кадры не начинаются. Child-only environment flag
+TDVR_XR_WORLD_TIMING=1 устанавливается собственным capture configuration export;
+настройки Windows/SteamVR/ALVR и родительский процесс не меняются.
+
+Hash/signature-gated engine hook дополнительно требует development_process,
+валидную основную camera record и наблюдаемый render thread. Он вызывает
+TdvrBeginXrWorldFrame перед оригинальным world render, без engine stats mutex.
+Capture под своим mutex выполняет Wait/Begin/LocateViews один раз. Оригинальная
+игровая функция вызывается по-прежнему один раз, камера/history не меняются.
+Present затем копирует обычный backbuffer в плоскую XR-панель и делает EndFrame
+для уже начатого кадра; нового Wait/Begin на Present в этом режиме нет.
+
+Дублирующий begin при открытом кадре возвращает S_FALSE, не открывая новый.
+Present без world begin не отправляет новый кадр. Begin до graphics initialization
+не запускает runtime. World begin и Present должны быть на том же потоке,
+иначе режим останавливается до начала XR-кадра. STOPPING не обрабатывается
+между Begin и End: события проверяются на следующей границе. Незавершённый
+CPU frame при cleanup закрывается пустым EndFrame, сохраняя GPU quarantine.
+
+Это ещё не привязка глаза к игровой камере, не simulation freeze и не два
+прохода с отдельными histories. Не доказано, что один main-camera world call
+на конкретной сцене соответствует единственному игровому кадру: дополнительный
+вызов до Present просто пропускает begin, и camera consumer не должен считать
+его новым XR frame. Resize/смена queue по-прежнему останавливают режим.
+
+Fake XR/WARP тесты проверяют pre-world LocateViews → copy/release/End на Present,
+повторный begin/Present, no-render, несовпадение потока, STOPPING после Begin,
+copy timeout и cleanup открытого frame. Обычный capture host проверяет отказ
+включения timing без profile и отсутствие XR begin в обычном режиме.
+Новый режим в настоящей игре/runtime пока не запускался: пользователь играет
+миссию, и запрет остаётся до его сообщения, независимо от прошедшего времени.
+
+Проверки среза: Build-Native.ps1 -BuildDirectory build/native-trace, CTest 18/18,
+Python 16/16; launcher дополнительно отклоняет --xr-world-timing без profile
+до чтения EXE/создания дочернего процесса (exit 1). Ни одна проверка нового
+режима не запускала настоящую игру/runtime/шлем.
