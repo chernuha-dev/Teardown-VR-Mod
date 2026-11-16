@@ -13,6 +13,7 @@
 ```powershell
 python scripts/Game-Control.py --pid <development-pid> --attach ping
 python scripts/Game-Control.py --pid <development-pid> status
+python scripts/Game-Control.py --pid <development-pid> engine-status
 python scripts/Game-Control.py --pid <development-pid> request-exit
 ```
 
@@ -29,6 +30,14 @@ quarantine. Нулевой captured при включённой панели о�
 в этом режиме отключён. Ошибка panel_hresult означает, что соответствующие
 panel stats недоступны; её нельзя считать отсутствием ошибок рендера.
 
+`engine-status` читает позу наблюдаемой камеры, счётчики world render,
+изменения history/serial, thread changes и размеры output target. Сначала
+отдельно подключить engine observer через Probe-DevelopmentCamera.py.
+При его отсутствии возвращается engine_probe_not_loaded; команда сама не
+устанавливает hooks. Три блока являются отдельными наблюдениями, не атомарным
+snapshot симуляции. На этом срезе команда собрана и проходит локальные проверки;
+её сквозная проверка в настоящей игре отложена, пока пользователь играет.
+
 `request-exit` отправляет WM_CLOSE только собственному видимому TeardownWindow.
 Ответ exit_requested не подтверждает завершение: процесс проверяется отдельно.
 Игра может завершиться до получения ответа клиентом. Команда не вызывает
@@ -41,7 +50,7 @@ python scripts/Game-Control.py --mcp
 ```
 
 Это stdio сервер JSON-RPC с сообщением на строку. Инструменты `tdvr_ping`,
-`tdvr_status`, `tdvr_request_exit` принимают единственный аргумент `pid`
+`tdvr_status`, `tdvr_engine_status`, `tdvr_request_exit` принимают единственный аргумент `pid`
 (положительное целое число). Перед использованием требуется CLI `--attach`.
 Initialize, tools/list и protocol ping не обращаются к игре. Сервер реализован,
 но автоматически в настройки Codex не зарегистрирован; CLI уже работает.
@@ -64,3 +73,9 @@ discovery без доступа к игре, routing, ошибки/timeout и н
 Итого на этом срезе CTest 17/17, Python 16/16. Это интерфейс диагностики,
 а не управление игровым персонажем, сценою или VR-контроллерами. Стереорендер
 мира и комфорт в шлеме этим не подтверждены.
+
+Позднее пользователь прислал снимок SteamVR Mirror с игровой панелью и
+подтвердил, что панель видна в шлеме. Это подтверждает появление изображения,
+но не независимые проекции глаз или комфорт. Development-процесс закрыт
+через API перед пользовательской миссией; новые игровые/XR-запуски ждут
+его сообщения о завершении игры, а не истечения десяти минут.

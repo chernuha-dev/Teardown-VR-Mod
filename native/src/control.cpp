@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Development-only game API. No SendInput, cursor calls, focus or foreground changes.
 #include "tdvr_capture.h"
+#include "tdvr_engine_probe.h"
 #include <sddl.h>
 #include <filesystem>
 #include <cwctype>
@@ -8,6 +9,8 @@
 #include <string>
 #include <mutex>
 #include <memory>
+#include <locale>
+#include <cmath>
 
 namespace {
 std::mutex startup_mutex;
@@ -40,8 +43,56 @@ BOOL CALLBACK close_game(HWND window, LPARAM) {
     }
     return TRUE;
 }
+std::string engine_status() {
+    const auto engine = GetModuleHandleW(L"tdvr_engine_probe.dll");
+    if (!engine) return "{\"ok\":false,\"error\":\"engine_probe_not_loaded\"}";
+    const auto camera_fn = reinterpret_cast<HRESULT (WINAPI*)(TdvrEngineStats*)>(GetProcAddress(engine, "TdvrGetEngineStats"));
+    const auto world_fn = reinterpret_cast<HRESULT (WINAPI*)(TdvrWorldRenderStats*)>(GetProcAddress(engine, "TdvrGetWorldRenderStats"));
+    const auto target_fn = reinterpret_cast<HRESULT (WINAPI*)(TdvrEngineTargetStats*)>(GetProcAddress(engine, "TdvrGetEngineTargetStats"));
+    TdvrEngineStats camera{}; camera.size = sizeof(camera); camera.abi = 1;
+    TdvrWorldRenderStats world{}; world.size = sizeof(world); world.abi = 1;
+    TdvrEngineTargetStats target{}; target.size = sizeof(target); target.abi = 1;
+    const auto camera_hr = camera_fn ? camera_fn(&camera) : E_NOINTERFACE;
+    const auto world_hr = world_fn ? world_fn(&world) : E_NOINTERFACE;
+    const auto target_hr = target_fn ? target_fn(&target) : E_NOINTERFACE;
+    std::ostringstream out; out.imbue(std::locale::classic()); out.precision(17);
+    out << "{\"ok\":true,\"protocol\":1,\"pid\":" << GetCurrentProcessId()
+        << ",\"camera_hresult\":" << camera_hr << ",\"world_hresult\":" << world_hr << ",\"target_hresult\":" << target_hr;
+    // These are separate observational snapshots, not an atomic stereo frame.
+    // Return null for invalid floating-point samples rather than invalid JSON.
+    auto array = [&](const auto& values) {
+        out << '['; bool first = true;
+        for (const auto value : values) {
+            if (!first) out << ',';
+            first = false;
+            if (std::isfinite(value)) out << value; else out << "null";
+        }
+        out << ']';
+    };
+    if (SUCCEEDED(camera_hr)) {
+        out << ",\"camera\":{\"calls\":" << camera.camera_calls << ",\"valid\":" << camera.valid_samples
+            << ",\"rejected\":" << camera.rejected_samples << ",\"hook_installed\":" << camera.hook_installed << ",\"position\":";
+        array(camera.position); out << ",\"orientation\":"; array(camera.orientation); out << '}';
+    }
+    if (SUCCEEDED(world_hr)) {
+        out << ",\"world\":{\"calls\":" << world.calls << ",\"completed\":" << world.completed_calls
+            << ",\"valid\":" << world.valid_samples << ",\"invalid\":" << world.invalid_samples
+            << ",\"camera_mutations\":" << world.camera_mutations << ",\"serial_steps\":" << world.serial_steps
+            << ",\"history_swaps\":" << world.history_swaps << ",\"thread_changes\":" << world.thread_changes
+            << ",\"hook_installed\":" << world.hook_installed << ",\"camera\":";
+        array(world.camera); out << '}';
+    }
+    if (SUCCEEDED(target_hr)) {
+        out << ",\"target\":{\"samples\":" << target.samples << ",\"valid\":" << target.valid_samples
+            << ",\"rejected\":" << target.rejected_samples << ",\"game_state\":" << target.game_state
+            << ",\"width\":" << target.width << ",\"height\":" << target.height << ",\"count\":" << target.count
+            << ",\"known_mask\":" << target.known_mask << ",\"matching_extent_mask\":" << target.matching_extent_mask << '}';
+    }
+    out << '}'; return out.str();
+}
 std::string execute(const std::string& command) {
     if (command == "ping") return "{\"ok\":true,\"protocol\":1}";
+    if (command == "engine-status") return engine_status();
     if (command == "request-exit") {
         // Ask this process's own game window to follow its normal exit path.
         // Does not activate a window, synthesize a key, or terminate the process.
