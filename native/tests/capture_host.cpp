@@ -2,6 +2,8 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
+#include <shlobj.h>
+#include <filesystem>
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -41,6 +43,18 @@ int main(int argc, char** argv) {
     externally_stats = reinterpret_cast<GetCaptureStats>(GetProcAddress(module, "TdvrGetCaptureStats"));
     require(externally_started && externally_stats, "injected exports missing");
     require(TdvrStartCapture() == S_FALSE, "capture was not initialized before child main");
+    if (const auto* profile = std::getenv("TDVR_DEV_PROFILE")) {
+        char folder[MAX_PATH]{};
+        require(SHGetSpecialFolderPathA(nullptr, folder, CSIDL_LOCAL_APPDATA, FALSE) != FALSE
+            && std::filesystem::path(folder) == std::filesystem::path(profile) / "AppData" / "Local",
+            "child special folder escaped development profile");
+        require(SHGetSpecialFolderPathA(nullptr, folder, CSIDL_PERSONAL, FALSE) != FALSE
+            && std::filesystem::path(folder) == std::filesystem::path(profile) / "Documents",
+            "child Documents escaped development profile");
+        const auto* env = std::getenv("LOCALAPPDATA");
+        require(env && std::filesystem::path(env) == std::filesystem::path(profile) / "AppData" / "Local",
+            "CRT environment escaped development profile");
+    }
 #endif
     const bool legacy = argc == 2 && std::string(argv[1]) == "--legacy";
     require(argc == 1 || legacy, "usage: tdvr_capture_host [--legacy]");

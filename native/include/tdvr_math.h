@@ -1,6 +1,8 @@
 #pragma once
 
-#ifdef _WIN32
+#if defined(TDVR_STATIC)
+#define TDVR_API
+#elif defined(_WIN32)
 #ifdef TDVR_BUILD
 #define TDVR_API __declspec(dllexport)
 #else

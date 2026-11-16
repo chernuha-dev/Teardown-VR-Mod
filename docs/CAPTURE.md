@@ -51,3 +51,52 @@ Capture DLL не использует legacy Lua bridge и не подключа
 Остаются: игровой camera/render hook, два render pass из одного состояния,
 OpenXR session lifecycle/input и безопасный GPU submit. Этот capture-срез
 не является играбельным VR-прототипом.
+
+## Отдельная development-копия и desktop-проверка
+
+`scripts/Stage-DevelopmentGame.py` создаёт обычные копии файлов под ignored
+local/, без hardlink/junction. Требует наблюдаемый SHA-256 EXE, не перезаписывает
+существующий destination и исключает оба legacy VR DLL, mods, пользовательские
+VR INI/логи. Опционально копирует options.xml в отдельный профиль, не меняя
+исходные quality settings. Это не установка мода в live game.
+
+У launcher есть необязательный третий аргумент development-profile. До main
+он настраивает LOCALAPPDATA/APPDATA/USERPROFILE дочернего процесса и перехватывает
+SHGetSpecialFolderPathA для AppData/Documents/Profile. Синтетический host
+проверяет и Win32 path, и CRT getenv. Это изоляция известных путей Teardown,
+не универсальная OS sandbox: произвольный DLL может пользоваться другими API.
+
+После явного разрешения пользователя desktop-копия была запущена без VR:
+получен D3D12 backbuffer 3440×1440, меню и 3D-сцена выводятся. Новый savegame,
+options и log находятся под local/game-dev/profile; live options.xml сохранил
+прежний размер и LastWriteTime. Первый запуск остановился на зависимости без
+её INI; имеющаяся конфигурация зависимости скопирована без изменения, никаких
+проверок DRM/лицензирования код не обходит. Игровые файлы/настройки не публикуются.
+
+## Наблюдатель камеры Teardown
+
+`tdvr_engine_probe.dll` — отдельный observational module. Проверяет полный
+SHA-256/размер EXE и префикс инструкции в уже загруженной игре до установки
+единственного camera hook. Неизвестный EXE или несовпадение сигнатуры дают
+ERROR_NOT_SUPPORTED. В наблюдаемом EXE дисковые байты этого RVA отличаются
+от байтов после обычного запуска; механизм преобразования не исследован.
+Проверять такой префикс по диску и считать его runtime-функцией нельзя.
+Никаких действий по обходу защиты не выполняется.
+
+Camera setter вызывает оригинал с исходными аргументами, затем наблюдает
+позицию/кватернион и engine view matrix. Статическая math library строит
+inverse view, сравниваемый с column-major матрицей движка. В desktop-сцене
+проверено 183 valid samples / 0 rejected, максимальная разница элементов
+последней наблюдаемой view ~1.58e-6. Это подтверждает соответствие соглашения
+поз этой функции; projection override, выбор игровой камеры, stereo replay
+и VR input этим не реализуются.
+
+`scripts/Probe-DevelopmentCamera.py --pid <development-pid>` загружает module
+только в teardown.exe внутри ignored local/ с наблюдаемой идентичностью;
+`--stats-only` читает статистику. Live-процесс/Roblox отвергаются до загрузки
+DLL. Модуль закрепляется до конца процесса, поэтому для пересборки/замены
+нужно завершить соответствующую development-копию. Локальные memory snapshots
+для исследования хранятся только под local/ и не входят в Git.
+
+Автоматический итог этого среза: CTest 11/11, Python unittest 9/9.
+engine_identity_gate отвергает собственный test host до любых engine hooks.

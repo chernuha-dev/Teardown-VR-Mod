@@ -3,6 +3,7 @@
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 #include <MinHook.h>
+#include <shlobj.h>
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -12,6 +13,7 @@
 namespace {
 using Microsoft::WRL::ComPtr;
 using Factory = HRESULT (WINAPI*)(REFIID, void**);
+using FolderPath = BOOL (WINAPI*)(HWND, LPSTR, int, BOOL);
 using Factory2 = HRESULT (WINAPI*)(UINT, REFIID, void**);
 using CreateSwapchain = HRESULT (STDMETHODCALLTYPE*)(IDXGIFactory*, IUnknown*, DXGI_SWAP_CHAIN_DESC*, IDXGISwapChain**);
 using CreateHwnd = HRESULT (STDMETHODCALLTYPE*)(IDXGIFactory2*, IUnknown*, HWND,
@@ -42,6 +44,8 @@ struct State {
     std::recursive_mutex mutex;
     TdvrCaptureStats stats{sizeof(TdvrCaptureStats), 1};
     bool started = false;
+    std::wstring profile;
+    FolderPath folder_path = nullptr;
     Factory factory = nullptr, factory1 = nullptr;
     Factory2 factory2 = nullptr;
     CreateSwapchain create_swapchain = nullptr;
@@ -60,6 +64,26 @@ struct State {
     CaptureWork* quarantined = nullptr;
 };
 State& state() { static auto* value = new State; return *value; }
+BOOL WINAPI folder_path(HWND window, LPSTR path, int folder, BOOL create) {
+    auto& s = state();
+    const wchar_t* suffix = nullptr;
+    switch (folder & ~CSIDL_FLAG_MASK) {
+        case CSIDL_LOCAL_APPDATA: suffix = L"\\AppData\\Local"; break;
+        case CSIDL_APPDATA: suffix = L"\\AppData\\Roaming"; break;
+        case CSIDL_PERSONAL: suffix = L"\\Documents"; break;
+        case CSIDL_PROFILE: suffix = L""; break;
+        default: return s.folder_path(window, path, folder, create);
+    }
+    try {
+        if (!path) return FALSE;
+        const auto redirected = s.profile + suffix;
+        BOOL default_character = FALSE;
+        const int count = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, redirected.c_str(), -1,
+            path, MAX_PATH, nullptr, &default_character);
+        if (count <= 0 || default_character) { path[0] = 0; return FALSE; }
+        return TRUE;
+    } catch (...) { if (path) path[0] = 0; return FALSE; }
+}
 void* method(IUnknown* object, size_t slot) { return (*reinterpret_cast<void***>(object))[slot]; }
 template<class T> bool hook_method(void* target, void* detour, T& original, void*& registered) {
     if (registered) return registered == target;
@@ -303,11 +327,41 @@ HRESULT WINAPI TdvrStartCapture() {
             MH_Uninitialize(); return E_FAIL;
         }
     }
+    if (!s.profile.empty()) {
+        const auto shell_path = std::wstring(directory) + L"\\shell32.dll";
+        const auto shell = LoadLibraryExW(shell_path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        const auto folder_target = shell ? reinterpret_cast<void*>(GetProcAddress(shell, "SHGetSpecialFolderPathA")) : nullptr;
+        if (!folder_target || MH_CreateHook(folder_target, reinterpret_cast<void*>(folder_path),
+            reinterpret_cast<void**>(&s.folder_path)) != MH_OK || MH_QueueEnableHook(folder_target) != MH_OK) {
+            MH_Uninitialize(); return E_FAIL;
+        }
+    }
     for (const auto target : targets)
         if (MH_QueueEnableHook(target) != MH_OK) { MH_Uninitialize(); return E_FAIL; }
     if (MH_ApplyQueued() != MH_OK) { MH_Uninitialize(); return E_FAIL; }
     s.started = true;
     return S_OK;
+}
+HRESULT WINAPI TdvrConfigureDevelopmentProfile(const wchar_t* root) {
+    if (!root || !*root) return E_INVALIDARG;
+    auto& s = state();
+    std::lock_guard<std::recursive_mutex> lock(s.mutex);
+    if (s.started) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    try {
+        const std::wstring profile(root);
+        if (profile.size() > MAX_PATH - 40 || profile.size() < 4 || profile[1] != L':'
+            || (profile[2] != L'\\' && profile[2] != L'/')) return E_INVALIDARG;
+        // Directories are prepared by the development launcher, before child main.
+        const auto local = profile + L"\\AppData\\Local";
+        const auto roaming = profile + L"\\AppData\\Roaming";
+        if (!SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str())
+            || !SetEnvironmentVariableW(L"APPDATA", roaming.c_str())
+            || !SetEnvironmentVariableW(L"USERPROFILE", profile.c_str())
+            || !SetEnvironmentVariableW(L"TDVR_DEV_PROFILE", profile.c_str()))
+            return HRESULT_FROM_WIN32(GetLastError());
+        s.profile = profile;
+        return S_OK;
+    } catch (...) { return E_OUTOFMEMORY; }
 }
 HRESULT WINAPI TdvrGetCaptureStats(TdvrCaptureStats* stats) {
     if (!stats || stats->size != sizeof(TdvrCaptureStats) || stats->abi != 1) return E_INVALIDARG;

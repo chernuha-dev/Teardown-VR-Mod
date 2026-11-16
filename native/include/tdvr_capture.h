@@ -24,5 +24,8 @@ extern "C" {
 // Startup on a normal application thread BEFORE creating DXGI factories. No DllMain work.
 // Process lifetime only: the module pins itself; unloading hooked code is forbidden.
 TDVR_CAPTURE_API HRESULT WINAPI TdvrStartCapture();
+// Optional development profile, configured before startup. Redirects this child's
+// AppData/Documents queries and environment; never changes the user's folders.
+TDVR_CAPTURE_API HRESULT WINAPI TdvrConfigureDevelopmentProfile(const wchar_t* root);
 TDVR_CAPTURE_API HRESULT WINAPI TdvrGetCaptureStats(TdvrCaptureStats* stats);
 }

@@ -39,6 +39,20 @@ runtime/шлем/Teardown не запускались. Подробности и
 До VR-прототипа остаётся подключить настоящий engine render/camera, два прохода
 и OpenXR GPU submit. Захват плоского backbuffer сам по себе не закрывает VR-101/102.
 
+Продолжение DEV-004/005: подготовлена отдельная development-копия с собственным
+профилем и проверено перенаправление AppData/Documents/getenv. Пользователь
+разрешил desktop-запуск, затем сообщил о завершении Roblox; прежнее ограничение
+runtime на время Roblox больше не является текущей причиной не запускать стенд.
+Desktop Teardown дошёл до меню/3D-сцены с собственным capture module; получен
+реальный backbuffer 3440×1440. Отдельный camera observer допускается только по
+SHA-256 + runtime signature: 183 valid samples, 0 rejected, view error ~1.58e-6.
+Камера ещё не переопределяется, правильное VR-стерео этим не доказано.
+Следующий шаг — gameplay camera selection/render boundary, отдельные eye targets
+и подключение реального OpenXR lifecycle/GPU renderer.
+Этот срез прошёл CTest 11/11 и Python 9/9; неизвестный host отвергается до
+engine hook. Кандидаты update/camera-setup/frame root записаны в
+ENGINE_COMPATIBILITY.md, но ещё не используются для повторного render pass.
+
 Последующее чтение уже существующих логов v0.22/v1.1.0 обнаружило игровое
 D3D12 device/queue, backbuffer и TRendererD3D12. Поэтому рабочий путь — D3D12;
 статические OpenGL imports не доказывают активный OpenGL. Следующий практический

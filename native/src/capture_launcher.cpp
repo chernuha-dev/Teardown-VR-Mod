@@ -51,14 +51,14 @@ uintptr_t mapped_module(HANDLE process, const wchar_t* filename) {
     }
     throw std::runtime_error("required initial image mapping not found");
 }
-DWORD remote_call(HANDLE process, uintptr_t entry, void* argument) {
+DWORD remote_call(HANDLE process, uintptr_t entry, void* argument, const char* operation = "stats RPC") {
     Handle thread(CreateRemoteThread(process, nullptr, 0,
         reinterpret_cast<LPTHREAD_START_ROUTINE>(entry), argument, 0, nullptr));
     wincheck(thread.value != nullptr, "CreateRemoteThread");
     // Never free a buffer still used by a timed-out remote thread. The outer
     // guard terminates only our suspended/owned test child on failure.
     if (WaitForSingleObject(thread.value, 10000) != WAIT_OBJECT_0)
-        throw std::runtime_error("child initialization timed out");
+        throw std::runtime_error(std::string(operation) + " timed out");
     DWORD result = 0;
     wincheck(GetExitCodeThread(thread.value, &result) != FALSE, "GetExitCodeThread");
     return result;
@@ -78,9 +78,10 @@ struct Child {
 }
 int wmain(int argc, wchar_t** argv) {
     try {
+        std::cout << std::unitbuf;
         // This launcher never attaches to an existing process or the user's VR app.
-        if (argc != 3) {
-            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll>\n"
+        if (argc != 3 && argc != 4) {
+            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile]\n"
                 << "Capture-only child process. No OpenXR/VR output. No game deployment.\n";
             return argc == 1 ? 0 : 2;
         }
@@ -95,9 +96,11 @@ int wmain(int argc, wchar_t** argv) {
         wincheck(local != nullptr, "load capture DLL for export resolution");
         const auto start = GetProcAddress(local, "TdvrStartCapture");
         const auto getstats = GetProcAddress(local, "TdvrGetCaptureStats");
-        if (!start || !getstats) { FreeLibrary(local); throw std::runtime_error("capture exports missing"); }
+        const auto configure = GetProcAddress(local, "TdvrConfigureDevelopmentProfile");
+        if (!start || !getstats || !configure) { FreeLibrary(local); throw std::runtime_error("capture exports missing"); }
         const auto start_rva = reinterpret_cast<uintptr_t>(start) - reinterpret_cast<uintptr_t>(local);
         const auto stats_rva = reinterpret_cast<uintptr_t>(getstats) - reinterpret_cast<uintptr_t>(local);
+        const auto configure_rva = reinterpret_cast<uintptr_t>(configure) - reinterpret_cast<uintptr_t>(local);
         FreeLibrary(local);
         Child child;
         STARTUPINFOW startup{}; startup.cb = sizeof(startup);
@@ -115,7 +118,8 @@ int wmain(int argc, wchar_t** argv) {
         const auto exit_thread = GetProcAddress(ntdll, "RtlExitUserThread");
         wincheck(exit_thread != nullptr, "RtlExitUserThread");
         const auto exit_offset = reinterpret_cast<uintptr_t>(exit_thread) - reinterpret_cast<uintptr_t>(ntdll);
-        remote_call(child.info.hProcess, mapped_module(child.info.hProcess, L"ntdll.dll") + exit_offset, nullptr);
+        std::cout << "Initializing the child loader before primary main\n";
+        remote_call(child.info.hProcess, mapped_module(child.info.hProcess, L"ntdll.dll") + exit_offset, nullptr, "Windows loader bootstrap");
         const auto loadlibrary = GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
         wincheck(loadlibrary != nullptr, "LoadLibraryW address");
         // Windows may forward kernel32 exports to KernelBase. Resolve the module
@@ -132,11 +136,28 @@ int wmain(int argc, wchar_t** argv) {
         void* path_buffer = VirtualAllocEx(child.info.hProcess, nullptr, path_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         wincheck(path_buffer != nullptr, "VirtualAllocEx path");
         wincheck(WriteProcessMemory(child.info.hProcess, path_buffer, dll_text.c_str(), path_bytes, nullptr) != FALSE, "write DLL path");
-        remote_call(child.info.hProcess, remote_loader, path_buffer);
+        std::cout << "Loading capture module in child\n";
+        remote_call(child.info.hProcess, remote_loader, path_buffer, "capture LoadLibrary");
         wincheck(VirtualFreeEx(child.info.hProcess, path_buffer, 0, MEM_RELEASE) != FALSE, "free DLL path");
         // Remote thread DWORD truncates x64 HMODULE; enumerate modules instead.
         const auto remote_dll = remote_module(child.info.dwProcessId, dll.filename().wstring());
-        const DWORD init = remote_call(child.info.hProcess, remote_dll + start_rva, nullptr);
+        if (argc == 4) {
+            const auto profile = std::filesystem::absolute(argv[3]).lexically_normal();
+            if (profile == profile.root_path() || profile.wstring().size() > MAX_PATH - 40)
+                throw std::runtime_error("development profile must be a non-root short absolute path");
+            for (const auto* suffix : {L"AppData\\Local", L"AppData\\Roaming", L"Documents"})
+                std::filesystem::create_directories(profile / suffix);
+            const auto text = profile.wstring();
+            const SIZE_T size = (text.size() + 1) * sizeof(wchar_t);
+            void* remote_profile = VirtualAllocEx(child.info.hProcess, nullptr, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+            wincheck(remote_profile != nullptr, "allocate profile path");
+            wincheck(WriteProcessMemory(child.info.hProcess, remote_profile, text.c_str(), size, nullptr) != FALSE, "write profile path");
+            const auto configured = remote_call(child.info.hProcess, remote_dll + configure_rva, remote_profile, "profile configuration");
+            wincheck(VirtualFreeEx(child.info.hProcess, remote_profile, 0, MEM_RELEASE) != FALSE, "free profile path");
+            if (FAILED(static_cast<HRESULT>(configured))) throw std::runtime_error("profile configuration failed");
+        }
+        std::cout << "Initializing capture hooks before primary main\n";
+        const DWORD init = remote_call(child.info.hProcess, remote_dll + start_rva, nullptr, "capture startup");
         if (FAILED(static_cast<HRESULT>(init))) throw std::runtime_error("capture initialization failed");
         void* stats_buffer = VirtualAllocEx(child.info.hProcess, nullptr, sizeof(TdvrCaptureStats), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         wincheck(stats_buffer != nullptr, "VirtualAllocEx stats");

@@ -98,3 +98,20 @@ DEV-005 остаётся открытой. До её закрытия собст
 [PE/COFF](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format),
 [VS_VERSIONINFO](https://learn.microsoft.com/en-us/windows/win32/menurc/vs-versioninfo),
 [VS_FIXEDFILEINFO](https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo).
+
+## Первый desktop engine hook
+
+В отдельном development-процессе той же идентичности проверен camera setter
+RVA 0x5ded80: три аргумента object/position/quaternion, завершённая view matrix
+по object+0x40 в column-major, projection в первых 64 bytes. Observational hook
+всегда вызывает оригинал с исходными аргументами. Сравнение с собственным
+inverse view дало ~1.58e-6 на 183 valid samples без rejected samples.
+Это совместимость координат этого setter, не проверка всех camera modes/tools.
+
+По runtime call references найдены кандидаты для дальнейшего анализа:
+camera setup 0x6f770 (создаёт временную камеру и копирует её в game+0x240),
+update 0x78670 и вызывающая их frame-функция 0x70930. Их ABI, границы симуляции
+и возможность stereo replay ещё не подтверждены, hooks на них не установлены.
+Другой camera caller 0x65970 работает с отдельным объектом и камерой +0x9fd8;
+не смешивать её с основной камерой. Статические адреса из чужого лога сами
+по себе не включают поддержку: native gate проверяет полный SHA и runtime prefix.
