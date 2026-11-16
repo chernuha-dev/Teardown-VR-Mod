@@ -74,3 +74,37 @@ class CompanionTests(unittest.TestCase):
                     assert(cameraCalls == 1 and hapticCalls == 1)
                 ''')
                 self.assertEqual(lua.globals().blurCalls, int(available))
+
+    def test_native_snapshot_consistency(self):
+        lua = self.runtime()
+        lua.execute('''
+            init()
+            local read
+            for i=1,60 do
+                local name,value = debug.getupvalue(tick,i)
+                if name == "readNative" then read = value; break end
+            end
+            assert(read)
+            local state
+            for i=1,60 do
+                local name,value = debug.getupvalue(read,i)
+                if name == "nat" then state = value; break end
+            end
+            assert(state)
+            local b = TDVR_BRIDGE
+            b[65],b[159] = 7,7
+            read()
+            assert(not state.valid) -- native heartbeat is still zero
+            b[66],b[68],b[128] = 1,42,1
+            b[70],b[71],b[72],b[76] = .1,.2,.3,1
+            b[159] = 8
+            read()
+            assert(not state.valid) -- mismatched sequence markers
+            b[159] = 7
+            read()
+            assert(state.valid and state.seq == 42 and state.worldScale == 1)
+            assert(state.raw[70] == .1 and state.raw[76] == 1)
+            b[68],b[70],b[65] = 43,99,8
+            read()
+            assert(state.seq == 42 and state.raw[70] == .1) -- keep last snapshot
+        ''')
