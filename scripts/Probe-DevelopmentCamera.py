@@ -112,7 +112,7 @@ class CameraOverrideStats(c.Structure):
                 ("remaining_calls", c.c_uint32), ("reserved", c.c_uint32), ("last_camera", c.c_float * 34)]
 
 
-def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_render=False, camera_test=None, override_stats=False, target_trace=False, engine_targets=False):
+def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_render=False, camera_test=None, override_stats=False, target_trace=False, engine_targets=False, control=False):
     k = c.WinDLL("kernel32", use_last_error=True)
     declarations = {
         "OpenProcess": ([w.DWORD, w.BOOL, w.DWORD], w.HANDLE),
@@ -167,7 +167,7 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
         raise RuntimeError("module not loaded: " + name)
 
     dll = Path(dll).resolve(strict=True)
-    expected = "tdvr_capture.dll" if render_trace else "tdvr_engine_probe.dll"
+    expected = "tdvr_control.dll" if control else ("tdvr_capture.dll" if render_trace else "tdvr_engine_probe.dll")
     if dll.name != expected or not dll.is_relative_to((REPO / "build").resolve()):
         raise ValueError("Only this repository's built diagnostic module is supported")
     if render_trace and load:
@@ -200,11 +200,11 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
 
         local = check(k.LoadLibraryW(str(dll)), "load local probe exports")
         try:
-            start_address = check(k.GetProcAddress(local, b"TdvrResetTargetTrace" if target_trace else (b"TdvrResetRenderTrace" if render_trace else b"TdvrStartEngineProbe")), "start export")
+            start_address = check(k.GetProcAddress(local, b"TdvrStartControl" if control else (b"TdvrResetTargetTrace" if target_trace else (b"TdvrResetRenderTrace" if render_trace else b"TdvrStartEngineProbe"))), "start export")
             stats_export = b"TdvrGetTargetTrace" if target_trace else (b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else
                             (b"TdvrGetCameraOverrideStats" if override_stats else b"TdvrGetEngineStats")))
             if engine_targets: stats_export = b"TdvrGetEngineTargetStats"
-            stats_address = check(k.GetProcAddress(local, stats_export), "stats export")
+            stats_address = start_address if control else check(k.GetProcAddress(local, stats_export), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
             if camera_test is not None:
                 submit_offset = check(k.GetProcAddress(local, b"TdvrSubmitCameraOverride"), "camera request export") - local
@@ -226,6 +226,9 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
             status = call(module(dll.name) + start_offset)
             if status & 0x80000000:
                 raise RuntimeError(f"engine probe refused startup HRESULT=0x{status:08x}")
+        if control:
+            return {"schema_version": 1, "runtime_started": False, "control_server": True,
+                    "pipe": rf"\\.\pipe\tdvr-dev-{pid}"}
         if render_trace and reset_trace:
             status = call(module(dll.name) + start_offset)
             if status & 0x80000000:

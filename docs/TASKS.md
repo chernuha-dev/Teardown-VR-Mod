@@ -173,6 +173,15 @@ XR/GPU=0, quarantine=0, formats 28 → declared 29 / storage 27. Это плос
 панель; независимое стерео, руки и комфорт в шлеме не подтверждены.
 DEV-004 и VR-101/102 остаются открыты. Подробности — BUILD.md.
 
+DEV-004/005: добавлен собственный development API без Computer Use: отдельная
+DLL, named pipe и CLI/stdio MCP, команды ping/status/request-exit. Реальные
+attach/status и штатное закрытие предыдущей копии проверены без курсора и
+фокуса. Доступ только к development-копии; MCP не зарегистрирован автоматически.
+CTest 17/17, Python 16/16. Протокол и ограничения — CONTROL_API.md.
+В текущем игровом процессе observer также подтвердил output 3440×1440,
+format 28, game_state=6, 170 valid / 0 rejected samples. Это наблюдение
+ресурса и render boundary; второй проход и независимые eye targets ещё не связаны.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).
