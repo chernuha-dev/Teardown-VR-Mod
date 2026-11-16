@@ -29,7 +29,19 @@ class EngineStats(c.Structure):
                 ("identity_matched", c.c_uint32), ("signature_matched", c.c_uint32), ("hook_installed", c.c_uint32)]
 
 
-def probe(pid, dll, load=True):
+class RenderStack(c.Structure):
+    _fields_ = [("command", c.c_uint32), ("depth", c.c_uint32),
+                ("observations", c.c_uint64), ("first_present", c.c_uint64), ("rvas", c.c_uint32 * 24)]
+
+
+class RenderTrace(c.Structure):
+    _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
+                ("commands", c.c_uint64), ("stack_samples", c.c_uint64), ("dropped", c.c_uint64),
+                ("hook_mask", c.c_uint32), ("record_count", c.c_uint32),
+                ("last_hresult", c.c_int32), ("exhausted", c.c_uint32), ("generation", c.c_uint64), ("records", RenderStack * 64)]
+
+
+def probe(pid, dll, load=True, render_trace=False, reset_trace=False):
     k = c.WinDLL("kernel32", use_last_error=True)
     declarations = {
         "OpenProcess": ([w.DWORD, w.BOOL, w.DWORD], w.HANDLE),
@@ -75,6 +87,8 @@ def probe(pid, dll, load=True):
             present = k.Module32FirstW(snapshot, c.byref(entry))
             while present:
                 if entry.name.lower() == name.lower():
+                    if name.lower() == dll.name.lower() and Path(entry.path).resolve() != dll:
+                        raise ValueError("Loaded diagnostic DLL path differs from --dll; refusing mismatched export offsets")
                     return entry.base
                 present = k.Module32NextW(snapshot, c.byref(entry))
         finally:
@@ -82,8 +96,11 @@ def probe(pid, dll, load=True):
         raise RuntimeError("module not loaded: " + name)
 
     dll = Path(dll).resolve(strict=True)
-    if dll.name != "tdvr_engine_probe.dll" or not dll.is_relative_to((REPO / "build").resolve()):
-        raise ValueError("Only this repository's built camera probe is supported")
+    expected = "tdvr_capture.dll" if render_trace else "tdvr_engine_probe.dll"
+    if dll.name != expected or not dll.is_relative_to((REPO / "build").resolve()):
+        raise ValueError("Only this repository's built diagnostic module is supported")
+    if render_trace and load:
+        raise ValueError("Render trace requires the capture launcher --trace; late capture loading is unsupported")
     process = check(k.OpenProcess(0x043A, False, pid), "open development process")
     try:
         text = c.create_unicode_buffer(32768)
@@ -112,8 +129,8 @@ def probe(pid, dll, load=True):
 
         local = check(k.LoadLibraryW(str(dll)), "load local probe exports")
         try:
-            start_address = check(k.GetProcAddress(local, b"TdvrStartEngineProbe"), "start export")
-            stats_address = check(k.GetProcAddress(local, b"TdvrGetEngineStats"), "stats export")
+            start_address = check(k.GetProcAddress(local, b"TdvrResetRenderTrace" if render_trace else b"TdvrStartEngineProbe"), "start export")
+            stats_address = check(k.GetProcAddress(local, b"TdvrGetRenderTrace" if render_trace else b"TdvrGetEngineStats"), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
         finally:
             k.FreeLibrary(local)
@@ -131,7 +148,11 @@ def probe(pid, dll, load=True):
             status = call(module(dll.name) + start_offset)
             if status & 0x80000000:
                 raise RuntimeError(f"engine probe refused startup HRESULT=0x{status:08x}")
-        stats = EngineStats()
+        if render_trace and reset_trace:
+            status = call(module(dll.name) + start_offset)
+            if status & 0x80000000:
+                raise RuntimeError(f"trace reset refused HRESULT=0x{status:08x}")
+        stats = RenderTrace() if render_trace else EngineStats()
         stats.size, stats.abi = c.sizeof(stats), 1
         remote = check(k.VirtualAllocEx(process, None, c.sizeof(stats), 0x3000, 4), "allocate stats")
         check(k.WriteProcessMemory(process, remote, c.byref(stats), c.sizeof(stats), None), "initialize stats")
@@ -140,6 +161,14 @@ def probe(pid, dll, load=True):
             raise RuntimeError(f"stats failed HRESULT=0x{status:08x}")
         check(k.ReadProcessMemory(process, remote, c.byref(stats), c.sizeof(stats), None), "read stats")
         check(k.VirtualFreeEx(process, remote, 0, 0x8000), "free stats")
+        if render_trace:
+            if stats.record_count > 64 or any(s.depth > 24 for s in stats.records[:stats.record_count]):
+                raise RuntimeError("invalid render trace bounds")
+            return {"schema_version": 1, "observational_only": True, "runtime_started": False,
+                    **{name: getattr(stats, name) for name, _ in RenderTrace._fields_ if name not in ("size", "abi", "records")},
+                    "records": [{"command": s.command, "observations": s.observations, "first_present": s.first_present,
+                                 "executable_return_rvas": [f"0x{x:x}" for x in s.rvas[:s.depth]]}
+                                for s in stats.records[:stats.record_count]]}
         return {"schema_version": 1, "observational_only": True, "runtime_started": False,
                 **{name: list(getattr(stats, name)) if name in ("position", "orientation", "projection") else getattr(stats, name)
                    for name, _ in stats._fields_ if name not in ("size", "abi")}}
@@ -150,11 +179,16 @@ def probe(pid, dll, load=True):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pid", required=True, type=int)
-    parser.add_argument("--dll", type=Path, default=REPO / "build/native/Release/tdvr_engine_probe.dll")
+    parser.add_argument("--dll", type=Path)
     parser.add_argument("--stats-only", action="store_true")
+    parser.add_argument("--render-trace", action="store_true", help="Read the already initialized capture module's recording stacks")
+    parser.add_argument("--reset-trace", action="store_true", help="Rearm the capture trace window for the current scene")
     args = parser.parse_args()
     try:
-        print(json.dumps(probe(args.pid, args.dll, not args.stats_only), indent=2, allow_nan=False))
+        if args.reset_trace and not args.render_trace:
+            raise ValueError("--reset-trace requires --render-trace")
+        dll = args.dll or REPO / "build/native/Release" / ("tdvr_capture.dll" if args.render_trace else "tdvr_engine_probe.dll")
+        print(json.dumps(probe(args.pid, dll, not (args.stats_only or args.render_trace), args.render_trace, args.reset_trace), indent=2, allow_nan=False))
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print(json.dumps({"error": str(error), "runtime_started": False}))

@@ -137,3 +137,17 @@ game+0x214 с шагом game+0x200, вызывает 0x79dc0, вычитает 
 а не подтверждённый world-render pass. Его фактический target и связь с DXGI
 Present ещё не наблюдались; вызывать повторно или использовать как stereo
 boundary до этого нельзя.
+
+Новая runtime recording trace уточнила классификацию: на вилле реальные
+Draw/Dispatch стеки проходят через return 0x6fd57 внутри 0x6f770. Инструкция
+0x6fd52 вызывает 0x865b0 с четырьмя pointer arguments: scene (game+0x48),
+target (game+0x888), player (game+0x50), camera (game+0x240). Значения и роль
+аргументов выведены из call site; typed hook ещё не проверен. 0x6f770 поэтому
+является camera setup + render/UI, а не чистой функцией настройки камеры.
+
+Render candidate 0x865b0 уже при входе записывает player в scene+0x2200,
+инкрементирует scene+0x2208 и меняет местами поля scene+0x2210/+0x2214.
+Назначение последних полей (возможно temporal history) пока не доказано.
+Даже настоящий world render имеет side effects: слепой двойной вызов не
+доказывает независимые eye histories или синхронное стерео. Следующий этап —
+наблюдаемый hook этой границы, проверка camera/target и побочных состояний.

@@ -1,4 +1,5 @@
 #include "tdvr_capture.h"
+#include "tdvr_render_trace.h"
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <filesystem>
@@ -80,8 +81,10 @@ int wmain(int argc, wchar_t** argv) {
     try {
         std::cout << std::unitbuf;
         // This launcher never attaches to an existing process or the user's VR app.
-        if (argc != 3 && argc != 4) {
-            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile]\n"
+        const bool trace = argc >= 4 && std::wstring(argv[argc-1]) == L"--trace";
+        const int positional = argc - (trace ? 1 : 0);
+        if (positional != 3 && positional != 4) {
+            std::cout << "Usage: tdvr_capture_launcher <development-exe> <tdvr_capture.dll> [development-profile] [--trace]\n"
                 << "Capture-only child process. No OpenXR/VR output. No game deployment.\n";
             return argc == 1 ? 0 : 2;
         }
@@ -97,10 +100,14 @@ int wmain(int argc, wchar_t** argv) {
         const auto start = GetProcAddress(local, "TdvrStartCapture");
         const auto getstats = GetProcAddress(local, "TdvrGetCaptureStats");
         const auto configure = GetProcAddress(local, "TdvrConfigureDevelopmentProfile");
-        if (!start || !getstats || !configure) { FreeLibrary(local); throw std::runtime_error("capture exports missing"); }
+        const auto enable_trace = GetProcAddress(local, "TdvrEnableRenderTrace");
+        const auto get_trace = GetProcAddress(local, "TdvrGetRenderTrace");
+        if (!start || !getstats || !configure || !enable_trace || !get_trace) { FreeLibrary(local); throw std::runtime_error("capture exports missing"); }
         const auto start_rva = reinterpret_cast<uintptr_t>(start) - reinterpret_cast<uintptr_t>(local);
         const auto stats_rva = reinterpret_cast<uintptr_t>(getstats) - reinterpret_cast<uintptr_t>(local);
         const auto configure_rva = reinterpret_cast<uintptr_t>(configure) - reinterpret_cast<uintptr_t>(local);
+        const auto enable_trace_rva = reinterpret_cast<uintptr_t>(enable_trace) - reinterpret_cast<uintptr_t>(local);
+        const auto get_trace_rva = reinterpret_cast<uintptr_t>(get_trace) - reinterpret_cast<uintptr_t>(local);
         FreeLibrary(local);
         Child child;
         STARTUPINFOW startup{}; startup.cb = sizeof(startup);
@@ -141,7 +148,7 @@ int wmain(int argc, wchar_t** argv) {
         wincheck(VirtualFreeEx(child.info.hProcess, path_buffer, 0, MEM_RELEASE) != FALSE, "free DLL path");
         // Remote thread DWORD truncates x64 HMODULE; enumerate modules instead.
         const auto remote_dll = remote_module(child.info.dwProcessId, dll.filename().wstring());
-        if (argc == 4) {
+        if (positional == 4) {
             const auto profile = std::filesystem::absolute(argv[3]).lexically_normal();
             if (profile == profile.root_path() || profile.wstring().size() > MAX_PATH - 40)
                 throw std::runtime_error("development profile must be a non-root short absolute path");
@@ -156,13 +163,21 @@ int wmain(int argc, wchar_t** argv) {
             wincheck(VirtualFreeEx(child.info.hProcess, remote_profile, 0, MEM_RELEASE) != FALSE, "free profile path");
             if (FAILED(static_cast<HRESULT>(configured))) throw std::runtime_error("profile configuration failed");
         }
+        if (trace && FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess,
+            remote_dll + enable_trace_rva, nullptr, "enable render trace"))))
+            throw std::runtime_error("render trace configuration failed");
         std::cout << "Initializing capture hooks before primary main\n";
         const DWORD init = remote_call(child.info.hProcess, remote_dll + start_rva, nullptr, "capture startup");
         if (FAILED(static_cast<HRESULT>(init))) throw std::runtime_error("capture initialization failed");
         void* stats_buffer = VirtualAllocEx(child.info.hProcess, nullptr, sizeof(TdvrCaptureStats), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         wincheck(stats_buffer != nullptr, "VirtualAllocEx stats");
+        void* trace_buffer = trace ? VirtualAllocEx(child.info.hProcess, nullptr, sizeof(TdvrRenderTrace),
+            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE) : nullptr;
+        if (trace) wincheck(trace_buffer != nullptr, "allocate trace snapshot");
         wincheck(ResumeThread(child.info.hThread) != static_cast<DWORD>(-1), "ResumeThread");
         uint64_t last_captures = 0;
+        uint32_t trace_records = 0, polls = 0;
+        uint64_t trace_generation = 0;
         for (;;) {
             const DWORD wait = WaitForSingleObject(child.info.hProcess, 100);
             if (wait == WAIT_OBJECT_0) break;
@@ -173,6 +188,23 @@ int wmain(int argc, wchar_t** argv) {
                 const DWORD status = remote_call(child.info.hProcess, remote_dll + stats_rva, stats_buffer);
                 if (FAILED(static_cast<HRESULT>(status))) throw std::runtime_error("remote stats failed");
                 wincheck(ReadProcessMemory(child.info.hProcess, stats_buffer, &stats, sizeof(stats), nullptr) != FALSE, "read stats");
+                if (trace && (++polls % 10 == 0)) {
+                    TdvrRenderTrace snapshot{}; snapshot.size = sizeof(snapshot); snapshot.abi = 1;
+                    wincheck(WriteProcessMemory(child.info.hProcess, trace_buffer, &snapshot, sizeof(snapshot), nullptr) != FALSE, "initialize trace snapshot");
+                    if (FAILED(static_cast<HRESULT>(remote_call(child.info.hProcess, remote_dll + get_trace_rva, trace_buffer))))
+                        throw std::runtime_error("render trace snapshot failed");
+                    wincheck(ReadProcessMemory(child.info.hProcess, trace_buffer, &snapshot, sizeof(snapshot), nullptr) != FALSE, "read trace snapshot");
+                    if (snapshot.record_count > 64) throw std::runtime_error("invalid trace record count");
+                    if (trace_generation != snapshot.generation) { trace_records = 0; trace_generation = snapshot.generation; }
+                    for (; trace_records < snapshot.record_count; ++trace_records) {
+                        const auto& record = snapshot.records[trace_records];
+                        if (record.depth > 24) throw std::runtime_error("invalid trace depth");
+                        std::cout << "render_trace command=" << record.command << " first_present=" << record.first_present
+                            << " mask=" << snapshot.hook_mask << " exe_return_rvas=";
+                        for (uint32_t i = 0; i < record.depth; ++i) std::cout << " 0x" << std::hex << record.executable_rvas[i];
+                        std::cout << std::dec << '\n';
+                    }
+                }
             } catch (...) {
                 // Child may exit normally between the process wait and RPC. Only
                 // swallow the error if the process has actually terminated.

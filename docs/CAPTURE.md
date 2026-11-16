@@ -100,3 +100,45 @@ DLL. Модуль закрепляется до конца процесса, п�
 
 Автоматический итог этого среза: CTest 11/11, Python unittest 9/9.
 engine_identity_gate отвергает собственный test host до любых engine hooks.
+
+## Поиск world-render boundary через GPU recording
+
+`tdvr_capture_launcher ... [development-profile] --trace` явно включает
+перехват DrawInstanced / DrawIndexedInstanced / Dispatch. По умолчанию эти
+hooks не устанавливаются. В момент association создаётся незапускаемый
+command list на фактическом game device для получения методов backend.
+Все реальные команды вызываются с исходными аргументами, без повторения.
+Поддержан один backend implementation за процесс; hook_mask показывает
+частичный/полный успех независимо от capture stats.
+
+Сохраняются только return RVAs основного EXE: первые 64 команды, затем
+каждая 64-я до 65536 команд, не более 64 уникальных стеков по 24 RVA.
+`observations` — число выборочных наблюдений, не число GPU draws. Нет symbol
+download, адресов сторонних модулей, путей пользователя или автоматической
+записи файлов. Перехват остаётся до выхода процесса. Он предназначен для
+диагностики и имеет CPU overhead; для измерения FPS его нужно выключить.
+
+Для уже запущенной development-копии (не live) можно прочитать/перевооружить
+окно наблюдения, обязательно указав **тот же файл DLL**, что использовал launcher:
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --dll build/native/Release/tdvr_capture.dll --render-trace --reset-trace
+python scripts/Probe-DevelopmentCamera.py --pid <development-pid> --dll build/native/Release/tdvr_capture.dll --render-trace
+```
+
+Trace mode не загружает capture поздно и не меняет позы. Проверяются путь
+процесса под local/, SHA EXE и точный путь загруженной DLL; несовпавшие export
+offsets не вызываются. Reset меняет generation и не переустанавливает hooks.
+
+CTest `d3d12_recording_trace` выполняет настоящие WARP draws: левую половину
+кадра через DrawInstanced, правую через DrawIndexedInstanced, с проверкой всех
+пикселей до/после resize; дополнительно выполняет no-op compute dispatch.
+Проверяются все три вида стеков, opt-in, ABI и reset. Итог: CTest 13/13,
+Python 9/9. Для параллельной сборки без замены загруженной DLL поддержан
+`scripts/Build-Native.ps1 -BuildDirectory build/native-trace`.
+
+В desktop development-копии действительно собраны Draw/Dispatch stacks в
+меню и на вилле. Они показывают вызов world renderer 0x865b0 из 0x6fd52
+(return 0x6fd57), внутри функции 0x6f770. Следовательно, 0x6f770 включает
+рендер после настройки камеры, а не только camera setup. Стерео ещё не
+повторяется; собственные кадры в OpenXR не отправляются.

@@ -207,3 +207,10 @@ world points с yaw и переносом, все frustum edges на трёх г
 scaled clip fields, отказ при переполнении float/потере depth precision,
 неизменность пары при ошибке и побайтное восстановление камеры с guard bytes
 при обычном выходе/исключении. Эти проверки не запускают игру или OpenXR.
+
+Если development-процесс удерживает DLL, не пытаться переписывать загруженный
+модуль: `powershell -NoProfile -File scripts/Build-Native.ps1 -BuildDirectory build/native-trace`
+создаёт независимое дерево сборки внутри repo/build. Параметр допускает
+относительный или абсолютный путь только в этом каталоге. Для новой DLL
+нужен следующий запуск development-копии. Opt-in `--trace` и команды чтения
+runtime stacks описаны в CAPTURE.md; обычные CTest не вызывают OpenXR.

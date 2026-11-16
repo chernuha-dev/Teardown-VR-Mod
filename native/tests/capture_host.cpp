@@ -1,4 +1,5 @@
 #include "tdvr_capture.h"
+#include "tdvr_render_trace.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
@@ -8,6 +9,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <memory>
+#include <d3dcompiler.h>
+#include <cstring>
 
 namespace {
 #ifdef TDVR_EXTERNALLY_LOADED
@@ -34,6 +38,9 @@ TdvrCaptureStats stats() {
     TdvrCaptureStats out{}; out.size = sizeof(out); out.abi = 1;
     check(TdvrGetCaptureStats(&out), "stats"); return out;
 }
+#ifndef TDVR_EXTERNALLY_LOADED
+#include "trace_scene.h"
+#endif
 }
 int main(int argc, char** argv) {
 #ifdef TDVR_EXTERNALLY_LOADED
@@ -57,7 +64,14 @@ int main(int argc, char** argv) {
     }
 #endif
     const bool legacy = argc == 2 && std::string(argv[1]) == "--legacy";
-    require(argc == 1 || legacy, "usage: tdvr_capture_host [--legacy]");
+    const bool trace = argc == 2 && std::string(argv[1]) == "--trace";
+    require(argc == 1 || legacy || trace, "usage: tdvr_capture_host [--legacy|--trace]");
+#ifndef TDVR_EXTERNALLY_LOADED
+    TdvrRenderTrace snapshot{};
+    require(TdvrGetRenderTrace(&snapshot) == E_INVALIDARG, "bad trace ABI accepted");
+    require(TdvrResetRenderTrace(nullptr) == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "unconfigured trace reset accepted");
+    if (trace) check(TdvrEnableRenderTrace(nullptr), "enable render tracing");
+#endif
     TdvrCaptureStats invalid{};
     require(TdvrGetCaptureStats(&invalid) == E_INVALIDARG, "bad ABI accepted");
     check(TdvrStartCapture(), "start capture");
@@ -102,6 +116,10 @@ int main(int argc, char** argv) {
         check(created.As(&swapchain), "chain3");
     }
     require(stats().associations >= 1, "creation was not hooked/associated with its queue");
+#ifndef TDVR_EXTERNALLY_LOADED
+    std::unique_ptr<TraceScene> scene;
+    if (trace) scene = std::make_unique<TraceScene>(device.Get());
+#endif
     swapchain->Present(0, DXGI_PRESENT_TEST);
     require(stats().captured_frames == 0, "DXGI_PRESENT_TEST triggered a capture");
     ComPtr<ID3D12CommandAllocator> allocator;
@@ -132,7 +150,11 @@ int main(int argc, char** argv) {
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
         list->ResourceBarrier(1, &barrier);
         const float red[]{1,0,0,1}, g[]{0,1,0,1};
-        list->ClearRenderTargetView(rtv, green ? g : red, 0, nullptr);
+#ifndef TDVR_EXTERNALLY_LOADED
+        if (scene) scene->render(list.Get(), rtv, static_cast<UINT>(buffer->GetDesc().Width), buffer->GetDesc().Height, green ? g : red);
+        else
+#endif
+            list->ClearRenderTargetView(rtv, green ? g : red, 0, nullptr);
         std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
         list->ResourceBarrier(1, &barrier);
         check(list->Close(), "close");
@@ -165,6 +187,26 @@ int main(int argc, char** argv) {
     require(second.captured_frames == 2 && second.resizes == 1 && second.width == 23 && second.height == 17
         && second.pixel_hash == color_hash(23, 17, {0,255,0,255}), "resized Present1 pixels mismatch");
     require(second.last_hresult == S_OK && second.unsupported == 0, "capture reported errors/unsupported hooks");
+#ifndef TDVR_EXTERNALLY_LOADED
+    snapshot.size = sizeof(snapshot); snapshot.abi = 1;
+    check(TdvrGetRenderTrace(&snapshot), "render trace snapshot");
+    if (trace) {
+        require(snapshot.hook_mask == 7 && snapshot.commands == 9 && snapshot.dropped == 0
+            && snapshot.stack_samples == 9 && snapshot.record_count >= 3, "GPU recording calls not traced");
+        uint32_t kinds = 0;
+        for (uint32_t i = 0; i < snapshot.record_count; ++i) {
+            const auto& record = snapshot.records[i];
+            require(record.depth > 0 && record.depth <= 24, "missing executable stack");
+            kinds |= 1u << (record.command-1);
+        }
+        require(kinds == 7, "draw/indexed/dispatch stack coverage incomplete");
+        require(TdvrEnableRenderTrace(nullptr) == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "late trace enable accepted");
+        check(TdvrResetRenderTrace(nullptr), "reset trace window");
+        check(TdvrGetRenderTrace(&snapshot), "reset trace stats");
+        require(snapshot.commands == 0 && snapshot.record_count == 0 && snapshot.hook_mask == 7
+            && snapshot.generation == 1, "trace reset lost hooks or kept stale records");
+    } else require(snapshot.commands == 0 && snapshot.hook_mask == 0, "tracing enabled without opt in");
+#endif
     CloseHandle(event);
     swapchain.Reset();
     DestroyWindow(window);

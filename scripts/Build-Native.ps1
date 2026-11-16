@@ -1,3 +1,4 @@
+param([string]$BuildDirectory = 'build\native')
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $cmake = Get-Command cmake -ErrorAction SilentlyContinue
@@ -10,7 +11,12 @@ if ($cmake) {
     $cmakePath = Join-Path $vsRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
     if (-not (Test-Path -LiteralPath $cmakePath)) { throw 'Install the Visual Studio C++ CMake tools component.' }
 }
-$buildDir = Join-Path $repoRoot 'build\native'
+$buildCandidate = if ([IO.Path]::IsPathRooted($BuildDirectory)) { $BuildDirectory } else { Join-Path $repoRoot $BuildDirectory }
+$buildDir = [IO.Path]::GetFullPath($buildCandidate)
+$buildRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'build')) + [IO.Path]::DirectorySeparatorChar
+if (-not $buildDir.StartsWith($buildRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'BuildDirectory must be a subdirectory of this repository build/.'
+}
 & $cmakePath -S $repoRoot -B $buildDir -G 'Visual Studio 17 2022' -A x64
 if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 & $cmakePath --build $buildDir --config Release

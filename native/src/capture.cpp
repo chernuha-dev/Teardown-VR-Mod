@@ -1,4 +1,5 @@
 #include "tdvr_capture.h"
+#include "tdvr_render_trace.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
@@ -200,6 +201,7 @@ void observe_present(IDXGISwapChain* object, UINT flags) noexcept {
     auto& s = state();
     std::lock_guard<std::recursive_mutex> lock(s.mutex);
     ++s.stats.presents;
+    if (!(flags & DXGI_PRESENT_TEST)) tdvr_trace_present();
     if (flags & DXGI_PRESENT_TEST) return;
     const auto found = s.chains.find(object);
     if (found == s.chains.end() || found->second.captured || found->second.failed) return;
@@ -248,6 +250,7 @@ void associate(IUnknown* device, IDXGISwapChain* object) noexcept {
             }
         }
         s.chains[object] = Chain{queue, false, false};
+        tdvr_trace_queue(queue.Get()); // optional observer; never changes capture HRESULT
         ++s.stats.associations;
     } catch (...) { state().stats.last_hresult = E_FAIL; }
 }
