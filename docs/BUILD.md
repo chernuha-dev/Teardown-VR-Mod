@@ -783,3 +783,35 @@ GPU allocation для обоих глаз теперь включает и frame
 textures. Их contents ещё не инициализированы для eye history; CPU state switching,
 первый reset и сами eye render passes остаются следующими частями. Новые ресурсы
 пока не устанавливались в scene/TAA slots и не использовались для рисования.
+
+### Unattended development sandbox startup
+
+Задержка предыдущих запусков оказалась не компиляцией: read-only наблюдение
+обнаружило game state 1, а pinned splash.lua ожидает InputPressed("any").
+Опциональный bootstrap добавляет только собственные Lua callback wrappers в
+отдельную development-копию. Заставка после штатного времени вызывает Menu;
+меню один раз за process запускает штатный mansion_sandbox через tryStartSandbox.
+В registry используется tdvr.dev.bootstrapped, без savegame/options writes самим
+wrapper. Avatar/EULA/start-level flow по-прежнему принадлежит игре; проверено с
+уже подготовленным development profile, не с новым пользователем.
+
+```powershell
+# При закрытой development-игре:
+python scripts/Stage-DevelopmentBootstrap.py
+python scripts/Stage-DevelopmentBootstrap.py --remove
+```
+
+Installer требует canonical path внутри local/, полный EXE SHA и оба известных
+UI script SHA. Сначала проверяет все входы, сохраняет оригиналы под
+local/game-dev/backups/development-bootstrap, затем атомарно добавляет owned
+suffixes. При ошибке второго write откатывает первый; неизвестные/user-edited
+scripts или backups отвергаются. Повторная установка идемпотентна, --remove
+восстанавливает точные исходные bytes. Игровые scripts/backups не публикуются.
+Глобальные папки, живая установка, ALVR/SteamVR и качество не меняются.
+
+Lua 5.1 test проверяет задержку, preload, передачу tick args, single start и
+возврат в меню без повторной загрузки карты. Filesystem test: backup/idempotence/
+exact removal, rollback, unknown script/EXE и отказ вне local/. Python 23/23.
+Runtime: без Computer Use/input получен state 6, 590 completed world calls,
+37 valid target samples / 0 rejected, 3440×1440. Это проверка автозапуска,
+не доказательство VR stereo или headset comfort.

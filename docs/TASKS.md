@@ -321,6 +321,14 @@ CTest 20/20, Python 21/21 прошли; полный runtime allocation подт
 CPU previous state, first-frame reset/initialization и применение banks внутри
 eye render passes ещё не реализованы. XR submit пока flat quad; VR-102 открыта.
 
+DEV-004: устранена зависимость unattended-проверок от ручного нажатия на
+заставке. Опциональный Stage-DevelopmentBootstrap.py для pinned local/ copy,
+с исходными backup, atomic writes/rollback и точным removal. Собственные Lua
+wrappers запускают штатный mansion_sandbox один раз за process; live game,
+качество и global runtime settings не меняются. Runtime без Computer Use/input:
+state 6, 590 completed world calls, 37 valid target samples / 0 rejected.
+Python 23/23, включая Lua 5.1 и filesystem safeguards. Это test harness.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).
