@@ -815,3 +815,64 @@ exact removal, rollback, unknown script/EXE и отказ вне local/. Python 
 Runtime: без Computer Use/input получен state 6, 590 completed world calls,
 37 valid target samples / 0 rejected, 3440×1440. Это проверка автозапуска,
 не доказательство VR stereo или headset comfort.
+
+### CPU history binding and bounded render test
+
+TdvrTemporalScope сохраняет и подменяет только audited render fields:
+
+| Object | Range | Role |
+|---|---|---|
+| scene | 0x2208, 8 bytes | render serial, не simulation identity |
+| scene | 0x2210, 8 bytes | два history indices |
+| scene | [0x2218,0x23ac) | current camera/position, VP и previous camera/VP caches |
+| scene | 0x23f1, 1 byte | reset |
+| scene | 10 ранее проверенных slots | framebuffer pointers |
+| TAA | 0, 4 bytes; 0x18, 8 bytes | counter и jitter |
+| TAA | 0x50..0x70 | пять texture pointers |
+
+Caller гарантирует эксклюзивный render-thread доступ и readable/writable spans
+на всё время scope. Helper не вызывает OS/GPU и не разыменовывает resource
+pointers. Проверяет размеры, overflow, непересечение scene/TAA spans, допустимые
+indices/reset и nonnull/unique owned pointers. Shared occupied guard отвергает
+nested scope. finish сохраняет post-render CPU state в выбранный bank и точно
+восстанавливает caller fields; destructor без finish восстанавливает без
+публикации partial state. Замена resource pointers движком отвергается: owner
+обязан прекратить их использование, а не считать это поддержкой resize.
+
+CPU test temporal_bank_scope моделирует два глаза с независимыми counters,
+matrices и histories, холодное/тёплое состояние, exact byte restoration,
+unwinding, nested scope, foreign resource replacement, bounds/overflow/overlap
+и сохранение изменений engine state вне принадлежащих scope полей.
+
+После выделения framebuffer/TAA banks доступен bounded live test:
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native-trace/Release/tdvr_engine_probe.dll --history-scope-test
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native-trace/Release/tdvr_engine_probe.dll --history-scope-test --stats-only
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native-trace/Release/tdvr_engine_probe.dll --cancel-history-scope
+```
+
+Максимум 120 renders / 3000 ms, только левый bank и исходная игровая камера.
+Каждый раз вызывается ровно один original world render. До scope проверяются
+gameplay/main-camera/thread/writable spans, текущие source/owned descriptors;
+смена scene/TAA, warm reset или устаревшие layouts останавливают test. Cold bank
+получает reset=1, counter/jitter=0: исходный engine reset очищает новые histories.
+После каждого прохода проверяются restoration, serial+1, history swap и прежние
+owned pointers. Outer render serial отдельно продвигается ровно на один; это
+не доказательство freeze simulation. Original GPU histories в тесте не рисуются,
+поэтому после stop/cancel/failure перед следующим штатным проходом ставится reset.
+Reset очищается исходной engine function. Camera preview и scope test взаимно
+исключены; request/cancel во время render-in-flight может вернуть ERROR_BUSY.
+
+TdvrHistoryScopeStats ABI 1 / 80 bytes. flags: 1 source reset pending,
+2 render in flight, 4 armed (в том числе ожидающий valid world после expiry).
+remaining=0 не заменяет проверку flags/следующего normal render.
+
+Runtime 2026-11-17: accepted=1, applied=120, restored=120, rejected=0,
+remaining=0, flags=0, initialized_mask=1; bank serial=2546, TAA counter=0
+(он циклический). Затем XR panel 2688/2688, XR/GPU=0, quarantine=0.
+Build-Native.ps1 build/native-trace, CTest 21/21, Python 23/23 прошли.
+Это проверка одного игрового render pass с owned history и восстановления.
+Правый eye pass, stereo submit, визуальная правильность картинки и comfort
+в этом срезе не проверялись. Source TAA+0x20 upload-buffer wrapper остаётся общим:
+полный ordering его GPU updates для двух проходов ещё нужно подтвердить.

@@ -329,6 +329,18 @@ wrappers запускают штатный mansion_sandbox один раз за 
 state 6, 590 completed world calls, 37 valid target samples / 0 rejected.
 Python 23/23, включая Lua 5.1 и filesystem safeguards. Это test harness.
 
+DEV-004/VR-102: CPU temporal scope изолирует 15 resource slots, render serial,
+history indices, current/previous camera/VP caches, TAA counter/jitter и reset.
+CPU fixture покрывает оба глаза, warm state, exact restoration/unwind, nested
+scope, replaced resources, bounds/overlap и сохранение unrelated engine writes.
+В development-игре bounded left-bank test действительно вызвал original world
+render 120 раз с owned histories: 120 applied / 120 restored / 0 rejected,
+автоstop и возврат к штатным histories с reset, flags=0. XR/GPU=0/quarantine=0.
+Build-Native.ps1 build/native-trace, CTest 21/21, Python 23/23 прошли.
+Пока только один проход с обычной камерой; right-eye pass/stereo submit и
+визуальная правильность не проверены. Общий TAA upload buffer +0x20 требует
+проверки GPU ordering до заявления полной изоляции двух проходов. VR-102 открыта.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

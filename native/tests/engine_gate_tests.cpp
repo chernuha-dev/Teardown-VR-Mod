@@ -35,6 +35,12 @@ int main() {
         || TdvrGetEyeTaaProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeTaaProbeStats(&taa_textures) != E_INVALIDARG) return 1;
     taa_textures.size = sizeof(taa_textures); taa_textures.abi = 1;
     if (FAILED(TdvrGetEyeTaaProbeStats(&taa_textures)) || taa_textures.phase || taa_textures.created) return 1;
+    TdvrHistoryScopeStats history_scope{};
+    if (TdvrRequestHistoryScopeTest(nullptr) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
+        || TdvrCancelHistoryScopeTest(nullptr) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
+        || TdvrGetHistoryScopeStats(nullptr) != E_INVALIDARG || TdvrGetHistoryScopeStats(&history_scope) != E_INVALIDARG) return 1;
+    history_scope.size = sizeof(history_scope); history_scope.abi = 1;
+    if (FAILED(TdvrGetHistoryScopeStats(&history_scope)) || history_scope.accepted || history_scope.applied || history_scope.flags) return 1;
     if (TdvrGetTemporalStats(nullptr) != E_INVALIDARG || TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;
     temporal.size = sizeof(temporal); temporal.abi = 2;
     if (TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;

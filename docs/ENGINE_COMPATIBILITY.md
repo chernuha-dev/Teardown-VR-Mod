@@ -229,3 +229,18 @@ TAA creation 0xa41a0 на D3D12-ветке использует engine formats 1
 Estimate 486 MiB при исходных extents/precision; они удерживаются до process
 exit и ещё не использовались в render passes. Destructor, reset/initialization,
 CPU history switching и синхронный replay этим не подтверждаются.
+
+Bounded single-bank render проверил сохранение/подстановку/восстановление
+selected CPU state и 15 pointers вокруг ровно одного original world call.
+Scope охватывает scene camera caches [0x2218,0x23ac), оба history indices,
+serial/reset и TAA counter/jitter. По инструкциям world render current VP
+из 0x22ec копируется в previous 0x232c, а view из 0x2258 — в 0x236c;
+они включены в scope. Cold reset использует исходный engine path, который
+очищает histories/TAA. В игре 120 applied/restored, 0 rejected; затем штатный
+reset исходных histories. Это не replay двух глаз и не visual/comfort test.
+
+Дополнительный аудит: TAA frame 0xa3e60 изменяет counter и jitter [0x18,0x20),
+а buffer из TAA+0x20 обновляет через renderer slot +0x128 → 0x5ac840 → 0x5a06c0.
+Последняя записывает upload command в stream через virtual call. Семантика
+копирования payload/order этого stream ещё не доказана для двух последовательных
+world renders; общий upload buffer не объявляется изолированным per-eye.

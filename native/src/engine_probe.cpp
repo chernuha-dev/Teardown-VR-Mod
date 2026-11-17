@@ -1,5 +1,6 @@
 #include "tdvr_engine_probe.h"
 #include "tdvr_frame.h"
+#include "tdvr_temporal_scope.h"
 #include <MinHook.h>
 #include <bcrypt.h>
 #include <array>
@@ -48,6 +49,11 @@ struct State {
     void* retained_eye_histories[2][10]{};
     TdvrEyeTaaProbeStats eye_taa_stats{sizeof(TdvrEyeTaaProbeStats),1};
     void* retained_eye_taa[2][5]{};
+    TdvrHistoryScopeStats history_scope_stats{sizeof(TdvrHistoryScopeStats),1};
+    TdvrTemporalCpuState history_cpu[2];
+    std::atomic<bool> history_pending{false}, source_reset_pending{false};
+    uint64_t history_expires = 0, history_scene = 0, history_taa = 0;
+    bool history_initialized[2]{}, history_rendering = false, scope_occupied = false;
     TdvrCameraOverride override_camera;
     TdvrTrackedCameraPreview tracked_camera;
     std::atomic<bool> tracked_pending{false};
@@ -497,6 +503,105 @@ void probe_eye_taa(void* scene, uintptr_t game) {
     } while (false);
     std::lock_guard<std::mutex> lock(s.mutex); s.eye_taa_stats = result;
 }
+bool writable_span(void* object,size_t bytes) {
+    auto address = reinterpret_cast<uintptr_t>(object);
+    if (!address || !bytes || address > std::numeric_limits<uintptr_t>::max()-bytes) return false;
+    const auto end = address+bytes;
+    while (address < end) {
+        MEMORY_BASIC_INFORMATION region{};
+        if (!VirtualQuery(reinterpret_cast<void*>(address),&region,sizeof(region)) || region.State != MEM_COMMIT
+            || (region.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return false;
+        const auto access = region.Protect & 0xff;
+        if (access != PAGE_READWRITE && access != PAGE_EXECUTE_READWRITE && access != PAGE_WRITECOPY && access != PAGE_EXECUTE_WRITECOPY) return false;
+        const auto start = reinterpret_cast<uintptr_t>(region.BaseAddress);
+        if (start > std::numeric_limits<uintptr_t>::max()-region.RegionSize || start+region.RegionSize <= address) return false;
+        address = start+region.RegionSize;
+    }
+    return true;
+}
+bool render_history_scope(void* scene,void* target,void* player,void* camera_object,uintptr_t game) {
+    auto& s = state();
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (!s.history_pending.load() || s.history_rendering) return false;
+        s.history_rendering = true;
+    }
+    bool done = false;
+    struct Guard {
+        State& s; bool& done;
+        ~Guard() {
+            std::lock_guard<std::mutex> lock(s.mutex); s.history_rendering = false;
+            if (!done) { s.history_pending.store(false); s.source_reset_pending.store(true);
+                s.history_scope_stats.remaining = 0; ++s.history_scope_stats.rejected; }
+        }
+    } guard{s,done};
+    auto reject = [&]() {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        s.history_pending.store(false); s.history_scope_stats.remaining = 0;
+        if (s.history_initialized[0]) s.source_reset_pending.store(true);
+        ++s.history_scope_stats.rejected; done = true; return false;
+    };
+    uint32_t game_state = 0;
+    uintptr_t taa = 0;
+    if (GetTickCount64() >= s.history_expires || !s.history_scope_stats.remaining
+        || GetCurrentThreadId() != s.world_stats.first_thread
+        || !read(reinterpret_cast<void*>(game+8),&game_state,sizeof(game_state)) || game_state != 6
+        || !read(static_cast<char*>(scene)+0xa30,&taa,sizeof(taa)) || !taa
+        || !writable_span(scene,0x23f2) || !writable_span(reinterpret_cast<void*>(taa),0x78)) return reject();
+    const TdvrTemporalMemory memory{static_cast<uint8_t*>(scene),0x23f2,reinterpret_cast<uint8_t*>(taa),0x78};
+    TdvrTemporalCpuState original;
+    if (!tdvr_capture_temporal_cpu(memory,original)) return reject();
+    if (s.history_initialized[0] && (s.history_scene != reinterpret_cast<uintptr_t>(scene)
+        || s.history_taa != taa || original.reset)) return reject();
+    for (unsigned slot = 0; slot < 10; ++slot) {
+        std::array<uint8_t,0x38> source{},owned{};
+        if (!read(reinterpret_cast<void*>(original.targets[slot]),source.data(),source.size())
+            || !read(s.retained_eye_histories[0][slot],owned.data(),owned.size()) || source != owned) return reject();
+    }
+    for (unsigned slot = 0; slot < 5; ++slot) {
+        std::array<uint8_t,0x1c> source{},owned{};
+        if (!read(reinterpret_cast<void*>(original.taa_textures[slot]),source.data(),source.size())
+            || !read(s.retained_eye_taa[0][slot],owned.data(),owned.size()) || source != owned) return reject();
+    }
+    auto& bank = s.history_cpu[0];
+    if (!s.history_initialized[0]) {
+        bank = original;
+        for (unsigned slot = 0; slot < 10; ++slot) bank.targets[slot] = reinterpret_cast<uintptr_t>(s.retained_eye_histories[0][slot]);
+        for (unsigned slot = 0; slot < 5; ++slot) bank.taa_textures[slot] = reinterpret_cast<uintptr_t>(s.retained_eye_taa[0][slot]);
+        bank.reset = 1; bank.taa_counter = 0; bank.taa_jitter.fill(0);
+    }
+    const auto serial = bank.serial;
+    const uint32_t history[2] = {bank.history[0],bank.history[1]};
+    TdvrTemporalScope scope(memory,bank,s.scope_occupied);
+    if (!scope.active()) return reject();
+    s.world_original(scene,target,player,camera_object); // exactly ONE original render
+    const bool finished = scope.finish();
+    TdvrTemporalCpuState restored;
+    const bool restored_ok = tdvr_capture_temporal_cpu(memory,restored) && tdvr_same_temporal_cpu(original,restored);
+    const bool advanced = finished && bank.serial == serial+1 && bank.history[0] == history[1] && bank.history[1] == history[0];
+    // Keep the outer render serial advancing once. Original GPU histories were
+    // not rendered; schedule a real engine reset before returning to them.
+    if (restored_ok) {
+        const auto next = original.serial+1;
+        std::memcpy(memory.scene+0x2208,&next,sizeof(next));
+    }
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        ++s.history_scope_stats.applied;
+        if (restored_ok) ++s.history_scope_stats.restored;
+        if (advanced && restored_ok) {
+            s.history_initialized[0] = true; s.history_scene = reinterpret_cast<uintptr_t>(scene); s.history_taa = taa;
+            s.history_scope_stats.initialized_mask |= 1;
+            s.history_scope_stats.bank_serial[0] = bank.serial; s.history_scope_stats.taa_counter[0] = bank.taa_counter;
+            --s.history_scope_stats.remaining;
+        } else { ++s.history_scope_stats.rejected; s.history_scope_stats.remaining = 0; }
+        if (!s.history_scope_stats.remaining || GetTickCount64() >= s.history_expires) {
+            s.history_scope_stats.remaining = 0; s.history_pending.store(false); s.source_reset_pending.store(true);
+        }
+        done = true;
+    }
+    return true;
+}
 void world_render(void* scene, void* target, void* player, void* camera_object) {
     auto& s = state();
     const auto count = s.world_calls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -507,7 +612,8 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     bool valid = false, main_camera = false;
     const bool pending = s.override_pending.load(std::memory_order_acquire);
     const bool tracked_pending = s.tracked_pending.load(std::memory_order_acquire);
-    if (sample || pending || tracked_pending || s.begin_xr_world) {
+    const bool history_pending = s.history_pending.load(std::memory_order_acquire);
+    if (sample || pending || tracked_pending || history_pending || s.source_reset_pending.load() || s.begin_xr_world) {
         valid = read(camera_object, before, sizeof(before))
             && read(static_cast<char*>(scene)+0x2208, &state_before, sizeof(state_before));
         for (const float value : before) if (!std::isfinite(value)) valid = false;
@@ -563,7 +669,15 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     }
     // No replay or skipped simulation. Never hold the stats mutex across engine
     // code. On opt-in, the original sees one selected eye; RAII restores the camera.
-    if (apply) {
+    const bool history_rendered = history_pending && valid && main_camera && render_history_scope(scene,target,player,camera_object,game);
+    if (!history_rendered && valid && main_camera && s.source_reset_pending.load()
+        && writable_span(static_cast<char*>(scene)+0x23f1,1)) {
+        *(static_cast<uint8_t*>(scene)+0x23f1) = 1;
+        s.source_reset_pending.store(false);
+    }
+    if (history_rendered) {
+        // The original render already ran with an independent history bank.
+    } else if (apply) {
         {
             TdvrEngineCameraScope scope(*static_cast<TdvrEngineCameraMatrices*>(camera_object), selected);
             s.world_original(scene, target, player, camera_object);
@@ -726,12 +840,42 @@ HRESULT WINAPI TdvrGetEyeTaaProbeStats(TdvrEyeTaaProbeStats* stats) {
     if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.eye_taa_stats; return S_OK;
 }
+HRESULT WINAPI TdvrRequestHistoryScopeTest(void*) {
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.world_stats.hook_installed || !s.world_stats.main_camera_matches || s.eye_history_stats.phase != 2
+        || s.eye_taa_stats.phase != 2 || !development_process()) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.history_rendering || s.history_pending.load() || s.source_reset_pending.load()
+        || s.override_pending.load() || s.tracked_pending.load()) return HRESULT_FROM_WIN32(ERROR_BUSY);
+    s.history_expires = GetTickCount64()+3000;
+    s.history_initialized[0] = s.history_initialized[1] = false;
+    s.history_scene = s.history_taa = 0;
+    s.history_scope_stats.remaining = 120; s.history_scope_stats.eye = 0;
+    s.history_scope_stats.initialized_mask = 0;
+    ++s.history_scope_stats.accepted; s.history_pending.store(true); return S_OK;
+}
+HRESULT WINAPI TdvrCancelHistoryScopeTest(void*) {
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.world_stats.hook_installed || !development_process()) return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.history_rendering) return HRESULT_FROM_WIN32(ERROR_BUSY);
+    s.history_pending.store(false); s.history_scope_stats.remaining = 0;
+    if (s.history_initialized[0]) s.source_reset_pending.store(true);
+    return S_OK;
+}
+HRESULT WINAPI TdvrGetHistoryScopeStats(TdvrHistoryScopeStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.history_scope_stats;
+    if (!s.history_pending.load() || GetTickCount64() >= s.history_expires) stats->remaining = 0;
+    stats->flags = (s.source_reset_pending.load() ? 1u : 0u) | (s.history_rendering ? 2u : 0u) | (s.history_pending.load() ? 4u : 0u);
+    return S_OK;
+}
 HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request) {
     if (!request || request->size != sizeof(*request) || request->abi != 1) return E_INVALIDARG;
     auto& s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
     if (!s.world_stats.hook_installed || !s.world_stats.main_camera_matches || !development_process())
         return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (request->render_calls && (s.history_pending.load() || s.history_rendering || s.source_reset_pending.load()))
+        return HRESULT_FROM_WIN32(ERROR_BUSY);
     if (!s.override_camera.arm(*request, GetTickCount64())) return E_INVALIDARG;
     TdvrTrackedCameraRequest cancel{sizeof(TdvrTrackedCameraRequest),1};
     s.tracked_camera.arm(cancel,GetTickCount64());
@@ -745,6 +889,8 @@ HRESULT WINAPI TdvrSubmitTrackedCameraPreview(const TdvrTrackedCameraRequest* re
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);
     if (!s.begin_xr_world || !s.world_stats.main_camera_matches || !development_process())
         return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (request->render_calls && (s.history_pending.load() || s.history_rendering || s.source_reset_pending.load()))
+        return HRESULT_FROM_WIN32(ERROR_BUSY);
     if (!s.tracked_camera.arm(*request,GetTickCount64())) return E_INVALIDARG;
     TdvrCameraOverrideRequest cancel{sizeof(TdvrCameraOverrideRequest),1};
     s.override_camera.arm(cancel,GetTickCount64());

@@ -58,6 +58,14 @@ struct TdvrEyeTaaProbeStats {
     TdvrEngineResourceInfo textures[2][5];
 };
 static_assert(sizeof(TdvrEyeTaaProbeStats) == 448);
+struct TdvrHistoryScopeStats {
+    uint32_t size, abi;
+    uint64_t accepted, applied, restored, rejected;
+    uint32_t remaining, eye;
+    uint64_t bank_serial[2];
+    uint32_t taa_counter[2], initialized_mask, flags; // 1 reset pending, 2 in flight, 4 armed
+};
+static_assert(sizeof(TdvrHistoryScopeStats) == 80);
 extern "C" {
 TDVR_ENGINE_API HRESULT WINAPI TdvrStartEngineProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats);
@@ -72,6 +80,10 @@ TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeHistoryProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeHistoryProbeStats(TdvrEyeHistoryProbeStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeTaaProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeTaaProbeStats(TdvrEyeTaaProbeStats* stats);
+// Bounded original-camera left-bank test: <=120 world calls / 3000 ms.
+TDVR_ENGINE_API HRESULT WINAPI TdvrRequestHistoryScopeTest(void* unused);
+TDVR_ENGINE_API HRESULT WINAPI TdvrCancelHistoryScopeTest(void* unused);
+TDVR_ENGINE_API HRESULT WINAPI TdvrGetHistoryScopeStats(TdvrHistoryScopeStats* stats);
 // Development-only, bounded synthetic camera input. Zero render_calls cancels.
 // Requires a valid audited main-camera observation first. No simulation replay.
 TDVR_ENGINE_API HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request);
