@@ -27,7 +27,7 @@ constexpr std::array<unsigned char, 32> observed_hash{{
     0x61,0x47,0xc3,0x04,0x26,0x6b,0x4b,0x0a,0xdd,0xa0,0x1b,0xd9,0x8c,0xaa,0x2c,0x4d}};
 using SetCamera = void (*)(void*, const float*, const float*);
 using WorldRender = void (*)(void*, void*, void*, void*);
-using BeginXrWorld = HRESULT (WINAPI*)(void*);
+using BeginXrWorld = HRESULT (WINAPI*)(TdvrXrViewSnapshot*);
 struct State {
     std::mutex mutex;
     std::atomic<uint64_t> calls{0};
@@ -40,6 +40,8 @@ struct State {
     TdvrEngineTargetStats target_stats{sizeof(TdvrEngineTargetStats), 1};
     TdvrTemporalStats temporal_stats{sizeof(TdvrTemporalStats), 1};
     TdvrCameraOverride override_camera;
+    TdvrTrackedCameraPreview tracked_camera;
+    std::atomic<bool> tracked_pending{false};
     std::atomic<bool> override_pending{false};
     TdvrCameraOverrideStats override_stats{sizeof(TdvrCameraOverrideStats), 1};
     bool attempted = false;
@@ -202,7 +204,8 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     uintptr_t game = 0;
     bool valid = false, main_camera = false;
     const bool pending = s.override_pending.load(std::memory_order_acquire);
-    if (sample || pending || s.begin_xr_world) {
+    const bool tracked_pending = s.tracked_pending.load(std::memory_order_acquire);
+    if (sample || pending || tracked_pending || s.begin_xr_world) {
         valid = read(camera_object, before, sizeof(before))
             && read(static_cast<char*>(scene)+0x2208, &state_before, sizeof(state_before));
         for (const float value : before) if (!std::isfinite(value)) valid = false;
@@ -235,8 +238,26 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
             same_thread = !s.world_stats.first_thread || GetCurrentThreadId() == s.world_stats.first_thread;
         }
         // Called before the original world render, without the engine stats lock.
-        // This opt-in changes XR frame timing only, not camera/simulation/history.
-        if (same_thread) s.begin_xr_world(nullptr);
+        TdvrXrViewSnapshot current{sizeof(TdvrXrViewSnapshot),1};
+        const bool began = same_thread && s.begin_xr_world(&current) == S_OK;
+        if (tracked_pending) {
+            uint32_t game_state = 0;
+            const bool gameplay = read(reinterpret_cast<void*>(game+8),&game_state,sizeof(game_state)) && game_state == 6;
+            std::lock_guard<std::mutex> lock(s.mutex);
+            if (!began || !gameplay || !writable_camera(camera_object)) current = {sizeof(TdvrXrViewSnapshot),1};
+            apply = s.tracked_camera.take(current,GetTickCount64(),selected);
+            if (apply) {
+                ++s.override_stats.applied_calls;
+                std::memcpy(s.override_stats.last_camera,&selected,sizeof(selected));
+            } else ++s.override_stats.rejected_calls;
+            s.tracked_pending.store(s.tracked_camera.remaining(GetTickCount64()) != 0,std::memory_order_release);
+        }
+    } else if (tracked_pending) {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        const TdvrXrViewSnapshot invalid{};
+        s.tracked_camera.take(invalid,GetTickCount64(),selected);
+        s.tracked_pending.store(false,std::memory_order_release);
+        ++s.override_stats.rejected_calls;
     }
     // No replay or skipped simulation. Never hold the stats mutex across engine
     // code. On opt-in, the original sees one selected eye; RAII restores the camera.
@@ -249,7 +270,8 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
         const bool restored_ok = read(camera_object, restored, sizeof(restored)) && !std::memcmp(before, restored, sizeof(before));
         std::lock_guard<std::mutex> lock(s.mutex);
         if (restored_ok) ++s.override_stats.restored_calls;
-        else { ++s.override_stats.rejected_calls; s.override_pending.store(false, std::memory_order_release); }
+        else { ++s.override_stats.rejected_calls; s.override_pending.store(false, std::memory_order_release);
+            s.tracked_pending.store(false,std::memory_order_release); }
     } else s.world_original(scene, target, player, camera_object);
     s.world_completed.fetch_add(1, std::memory_order_relaxed);
     if (!sample) return;
@@ -365,8 +387,24 @@ HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request
     if (!s.world_stats.hook_installed || !s.world_stats.main_camera_matches || !development_process())
         return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
     if (!s.override_camera.arm(*request, GetTickCount64())) return E_INVALIDARG;
+    TdvrTrackedCameraRequest cancel{sizeof(TdvrTrackedCameraRequest),1};
+    s.tracked_camera.arm(cancel,GetTickCount64());
+    s.tracked_pending.store(false,std::memory_order_release);
     ++s.override_stats.accepted_requests;
     s.override_pending.store(s.override_camera.remaining(GetTickCount64()) != 0, std::memory_order_release);
+    return S_OK;
+}
+HRESULT WINAPI TdvrSubmitTrackedCameraPreview(const TdvrTrackedCameraRequest* request) {
+    if (!request || request->size != sizeof(*request) || request->abi != 1) return E_INVALIDARG;
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.begin_xr_world || !s.world_stats.main_camera_matches || !development_process())
+        return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (!s.tracked_camera.arm(*request,GetTickCount64())) return E_INVALIDARG;
+    TdvrCameraOverrideRequest cancel{sizeof(TdvrCameraOverrideRequest),1};
+    s.override_camera.arm(cancel,GetTickCount64());
+    s.override_pending.store(false,std::memory_order_release);
+    s.tracked_pending.store(s.tracked_camera.remaining(GetTickCount64()) != 0,std::memory_order_release);
+    ++s.override_stats.accepted_requests;
     return S_OK;
 }
 HRESULT WINAPI TdvrGetCameraOverrideStats(TdvrCameraOverrideStats* stats) {
@@ -376,5 +414,6 @@ HRESULT WINAPI TdvrGetCameraOverrideStats(TdvrCameraOverrideStats* stats) {
     *stats = s.override_stats;
     stats->remaining_calls = s.override_pending.load(std::memory_order_relaxed)
         ? s.override_camera.remaining(GetTickCount64()) : 0;
+    if (s.tracked_pending.load(std::memory_order_relaxed)) stats->remaining_calls += s.tracked_camera.remaining(GetTickCount64());
     return S_OK;
 }

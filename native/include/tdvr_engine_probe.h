@@ -50,5 +50,6 @@ TDVR_ENGINE_API HRESULT WINAPI TdvrGetTemporalStats(TdvrTemporalStats* stats);
 // Development-only, bounded synthetic camera input. Zero render_calls cancels.
 // Requires a valid audited main-camera observation first. No simulation replay.
 TDVR_ENGINE_API HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request);
+TDVR_ENGINE_API HRESULT WINAPI TdvrSubmitTrackedCameraPreview(const TdvrTrackedCameraRequest* request);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetCameraOverrideStats(TdvrCameraOverrideStats* stats);
 }

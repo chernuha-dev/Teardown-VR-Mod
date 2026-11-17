@@ -38,7 +38,9 @@ TDVR_CAPTURE_API HRESULT WINAPI TdvrEnableXrPanel();
 // Explicit development mode. Requires configured profile; begins each XR frame
 // from the audited world-render hook, while Present still submits a flat quad.
 TDVR_CAPTURE_API HRESULT WINAPI TdvrEnableXrWorldTiming();
-TDVR_CAPTURE_API HRESULT WINAPI TdvrBeginXrWorldFrame(void* unused);
+// Optional output is populated under the same lock as begin. S_FALSE clears it;
+// only S_OK supplies this begin's observation (available may still be zero).
+TDVR_CAPTURE_API HRESULT WINAPI TdvrBeginXrWorldFrame(TdvrXrViewSnapshot* current);
 TDVR_CAPTURE_API HRESULT WINAPI TdvrGetPanelStats(TdvrPanelStats* stats);
 // Returns only the latest current XR observation. available=0 invalidates old
 // poses after no-render/tracking loss/session stop/error. Never starts runtime.

@@ -88,6 +88,11 @@ int main(int argc, char** argv) {
     if (trace) check(TdvrEnableRenderTrace(nullptr), "enable render tracing");
     require(TdvrEnableXrWorldTiming() == HRESULT_FROM_WIN32(ERROR_INVALID_STATE), "world timing accepted without profile or after startup");
     require(TdvrBeginXrWorldFrame(nullptr) == S_FALSE, "default capture began an XR world frame");
+    TdvrXrViewSnapshot receipt{sizeof(TdvrXrViewSnapshot),1,1,0,999};
+    require(TdvrBeginXrWorldFrame(&receipt) == S_FALSE && !receipt.available && !receipt.frame_id,
+        "failed begin reused an old XR observation");
+    receipt.abi = 2;
+    require(TdvrBeginXrWorldFrame(&receipt) == E_INVALIDARG, "invalid begin receipt ABI accepted");
 #endif
     TdvrCaptureStats invalid{};
     TdvrPanelStats panel{};

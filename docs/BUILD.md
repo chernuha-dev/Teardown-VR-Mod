@@ -608,3 +608,44 @@ scale=.5, antipodal и разные eye orientations, отказ bad anchor/trac
 без частичной записи. Сборка build/native и CTest 20/20 прошли; дополненный
 tracking test отдельно пересобран и прошёл. Запущенный prototype использует
 предыдущую DLL: новая calibration ещё не подключена к game render hook.
+
+### Bounded live-pose camera preview
+
+Собственная engine DLL теперь поддерживает TdvrSubmitTrackedCameraPreview
+(request ABI 1, 104 bytes). Используется только в development process с
+--xr-world-timing, установленным hook и ранее наблюдённой main camera.
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native/Release/tdvr_engine_probe.dll --xr-camera-test
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native/Release/tdvr_engine_probe.dll --override-stats
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native/Release/tdvr_engine_probe.dll --xr-camera-test --cancel-camera-test
+```
+
+Это однопроходный single-eye diagnostic, не stereo replay. Anchor берётся из
+наблюдения камеры при запросе и остаётся фиксированным: locomotion не реализован.
+На первом валидном XR pair калибруется origin, затем каждая новая поза строит
+новый camera record. Synthetic и tracked requests взаимно отменяются.
+TdvrBeginXrWorldFrame возвращает optional pair под тем же capture lock, что и
+Wait/Begin/Locate; S_FALSE очищает output, E_INVALIDARG отвергает неверный ABI.
+Повторное чтение latest snapshot через отдельный RPC для камеры не используется.
+
+Применение разрешено только для main camera, game state 6, render thread и
+writable record. RAII восстанавливает 136 bytes после единственного world call.
+Не более 600 calls / 10000 ms; loss/no-render, duplicate/nonmonotonic XR id/time
+и invalid pair прекращают preview без автоматического recovery/recenter.
+Frame key simulation_id=0 обозначает нетегированный diagnostic: реальная
+simulation identity не установлена и синхронность двух глаз не заявляется.
+External camera/frustum/temporal caches и инструмент этим режимом не исправлены;
+вывод остаётся плоским quad. Не считать его проверкой headset comfort.
+
+Автоматически: CTest 20/20, Python 21/21. Preview CPU test проверяет движение
+после initial calibration, origin height, выбранный глаз, budgets, expiry,
+duplicate/loss и отказ silent recovery; capture host — очистку begin receipt;
+неизвестный EXE отвергается до camera access.
+
+Runtime 2026-11-17: новая сборка запущена в development-копии. Пока world calls
+были нулевыми, CLI отказал до отправки preview. После появления сцены один
+запрос выполнил 600 applied / 600 restored / 0 rejected и автоматически исчерпал
+budget. Панель отправила 3496/3496 frames, XR/GPU=0, quarantine=0. Это проверка
+hook, поз и восстановления через API; визуальная правильность rendered camera,
+frustum caches и комфорт шлема в этом срезе не проверялись.

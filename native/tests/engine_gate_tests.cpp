@@ -28,6 +28,9 @@ int main() {
     if (TdvrSubmitCameraOverride(nullptr) != E_INVALIDARG
         || TdvrSubmitCameraOverride(&request) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)) return 1;
     TdvrCameraOverrideStats override_stats{};
+    TdvrTrackedCameraRequest tracked{sizeof(TdvrTrackedCameraRequest),1};
+    if (TdvrSubmitTrackedCameraPreview(nullptr) != E_INVALIDARG
+        || TdvrSubmitTrackedCameraPreview(&tracked) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)) return 1;
     if (TdvrGetCameraOverrideStats(&override_stats) != E_INVALIDARG) return 1;
     override_stats.size = sizeof(override_stats); override_stats.abi = 1;
     if (FAILED(TdvrGetCameraOverrideStats(&override_stats)) || override_stats.applied_calls || override_stats.remaining_calls) return 1;

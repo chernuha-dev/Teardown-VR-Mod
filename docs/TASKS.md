@@ -274,6 +274,18 @@ CPU tests проверяют yaw и наклон/roll, relative roomscale, ра�
 Это расчёт привязки, пока не live head-camera override; игровой hook должен
 передать гарантированно текущую пару и ограничить срок действия preview.
 
+DEV-004/VR-103: bounded live-pose preview подключён к world hook. Текущий
+XR pair возвращается вместе с успешным begin, затем один выбранный eye camera
+record подставляется и восстанавливается RAII; synthetic/tracked tests взаимно
+отменяются. 600 calls / 10 seconds, только gameplay state 6; loss/duplicate/
+invalid pair прекращает preview. Fixed anchor пока без locomotion/caches/tools.
+В отдельной development-игре после появления world render проверено:
+600 applied / 600 restored / 0 rejected / 0 remaining; XR frames 3496/3496,
+XR/GPU=0, quarantine=0. Без Computer Use, живой каталог не изменён.
+Автоматически: Build-Native.ps1 build/native, CTest 20/20, Python 21/21.
+Картинка в шлеме на этом срезе визуально не проверена; stereo world, руки и
+headset comfort не подтверждены. DEV-004 и VR-101/102/103 остаются открытыми.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

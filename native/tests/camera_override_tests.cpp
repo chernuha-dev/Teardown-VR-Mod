@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "tdvr_camera_override.h"
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -40,5 +41,39 @@ int main() {
     require(control.arm(r, 3000), "valid rearm failed");
     r.render_calls = 0; r.frame = {}; require(control.arm(r, 3001) && !control.take(3002, out), "explicit cancellation failed");
     r.abi = 0; require(!control.arm(r, 0), "unknown ABI accepted");
-    std::cout << "Bounded synthetic camera requests, per-eye selection and expiry passed\n";
+    TdvrTrackedCameraRequest tracked{sizeof(TdvrTrackedCameraRequest),1,0,3,100,0,
+        {{10,2,-20},{0,0,0,1}},1,.05,500};
+    TdvrTrackedCameraPreview preview;
+    TdvrXrViewSnapshot views{sizeof(TdvrXrViewSnapshot),1,1,0,10,100,15};
+    views.eyes[0] = {{-.032,1.7,0},{0,0,0,1}}; views.eyes[1] = {{.032,1.7,0},{0,0,0,1}};
+    views.fov[0] = {-.9,.7,.8,-.8}; views.fov[1] = {-.7,.9,.8,-.8};
+    require(preview.arm(tracked,1000) && preview.take(views,1001,out), "tracked preview refused");
+    const auto first = out;
+    require(std::abs(out.view[13]+2) < 1e-5, "HMD height added to game eye");
+    for (auto& eye : views.eyes) eye.position[0] += .25;
+    ++views.frame_id; ++views.predicted_display_time;
+    require(preview.take(views,1002,out) && std::abs(out.view[12]-first.view[12]+.25) < 1e-5,
+        "preview recalibrated on movement instead of tracking");
+    const auto second = out;
+    require(!preview.take(views,1003,out) && !preview.remaining(1003)
+        && !std::memcmp(&second,&out,sizeof(out)), "duplicate pose applied or output changed");
+    require(preview.arm(tracked,2000), "tracked rearm refused");
+    ++views.frame_id; ++views.predicted_display_time; views.available = 0;
+    require(!preview.take(views,2001,out) && !preview.remaining(2001), "tracking loss did not stop preview");
+    views.available = 1;
+    require(!preview.take(views,2002,out), "tracking recovery silently rearmed preview");
+    require(preview.arm(tracked,3000) && !preview.take(views,3100,out), "tracked expiry not enforced");
+    tracked.render_calls = 1; tracked.eye = 1;
+    require(preview.arm(tracked,4000) && preview.take(views,4001,out) && !preview.take(views,4002,out)
+        && out.projection[8] != first.projection[8], "tracked eye selection/budget ignored");
+    tracked.render_calls = 601; require(!preview.arm(tracked,0), "tracked budget overflow accepted");
+    tracked.render_calls = 1; tracked.duration_ms = 10001; require(!preview.arm(tracked,0), "tracked duration overflow accepted");
+    tracked.duration_ms = 100;
+    require(!preview.arm(tracked,std::numeric_limits<uint64_t>::max()-50), "tracked expiry overflow accepted");
+    require(preview.arm(tracked,5000), "tracked request refused before cancellation test");
+    auto bad_tracked = tracked; bad_tracked.world_anchor.orientation[3] = 2;
+    require(!preview.arm(bad_tracked,5001) && preview.remaining(5001) == 1, "invalid request replaced tracked preview");
+    tracked.render_calls = 0; tracked.world_anchor = {};
+    require(preview.arm(tracked,5002) && !preview.take(views,5003,out), "tracked cancellation failed");
+    std::cout << "Synthetic and live-pose preview budgets, origin, freshness, loss and expiry passed\n";
 }

@@ -2,7 +2,8 @@
 """Load/read the camera diagnostic ONLY in an audited local/ development game.
 
 Default: observations only. Explicit --camera-test applies a bounded synthetic
-camera during world render. No VR startup, signature guessing or live attachment.
+camera during world render. --xr-camera-test consumes a running own XR session.
+No VR startup by this script, signature guessing or live-install attachment.
 SPDX-License-Identifier: MIT
 """
 import argparse
@@ -106,6 +107,11 @@ class CameraRequest(c.Structure):
     _fields_ = [(name, c.c_uint32) for name in ("size", "abi", "eye", "render_calls", "duration_ms", "reserved")] + [("frame", FrameInput)]
 
 
+class TrackedCameraRequest(c.Structure):
+    _fields_ = [(name, c.c_uint32) for name in ("size", "abi", "eye", "render_calls", "duration_ms", "reserved")] + [
+        ("world_anchor", Pose), ("world_scale", c.c_double), ("near_clip_m", c.c_double), ("far_clip_m", c.c_double)]
+
+
 class CameraOverrideStats(c.Structure):
     _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
                 *[(name, c.c_uint64) for name in ("accepted_requests", "applied_calls", "restored_calls", "rejected_calls")],
@@ -207,7 +213,8 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
             stats_address = start_address if control else check(k.GetProcAddress(local, stats_export), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
             if camera_test is not None:
-                submit_offset = check(k.GetProcAddress(local, b"TdvrSubmitCameraOverride"), "camera request export") - local
+                submit_export = b"TdvrSubmitTrackedCameraPreview" if camera_test.get("tracked") else b"TdvrSubmitCameraOverride"
+                submit_offset = check(k.GetProcAddress(local, submit_export), "camera request export") - local
                 override_offset = check(k.GetProcAddress(local, b"TdvrGetCameraOverrideStats"), "camera status export") - local
                 world_offset = check(k.GetProcAddress(local, b"TdvrGetWorldRenderStats"), "world render export") - local
         finally:
@@ -252,8 +259,16 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
         if engine_targets: kind = EngineTargetStats
         stats = read_stats(stats_offset, kind)
         if camera_test is not None:
-            request = CameraRequest(); request.size, request.abi = c.sizeof(request), 1
-            if not camera_test.get("cancel"):
+            request = TrackedCameraRequest() if camera_test.get("tracked") else CameraRequest()
+            request.size, request.abi = c.sizeof(request), 1
+            if camera_test.get("tracked") and not camera_test.get("cancel"):
+                world = read_stats(world_offset, WorldRenderStats)
+                if not stats.valid_samples or not world.main_camera_matches:
+                    raise ValueError("Observe a gameplay camera before submitting a tracked preview")
+                request.eye = camera_test["eye"]; request.render_calls = 600; request.duration_ms = 10000
+                request.world_anchor = Pose(stats.position, stats.orientation)
+                request.world_scale = 1; request.near_clip_m, request.far_clip_m = world.camera[32:34]
+            elif not camera_test.get("cancel"):
                 world = read_stats(world_offset, WorldRenderStats)
                 if not stats.valid_samples or not world.main_camera_matches:
                     raise ValueError("Observe a gameplay camera before submitting a synthetic test")
@@ -323,24 +338,27 @@ def main():
     parser.add_argument("--test-fov", type=float, nargs=4, metavar=("LEFT", "RIGHT", "UP", "DOWN"), help="Signed synthetic FOV angles in degrees")
     parser.add_argument("--test-eye", choices=("left", "right"), default="left")
     parser.add_argument("--cancel-camera-test", action="store_true")
+    parser.add_argument("--xr-camera-test", action="store_true", help="Bounded live-pose single-eye preview; requires --xr-world-timing game")
     parser.add_argument("--override-stats", action="store_true")
     args = parser.parse_args()
     try:
         if args.target_trace and args.render_trace:
             raise ValueError("Select target trace or recording trace")
         args.render_trace = args.render_trace or args.target_trace
-        if args.engine_targets and (args.render_trace or args.world_render or args.override_stats or args.camera_test is not None or args.cancel_camera_test):
+        if args.engine_targets and (args.render_trace or args.world_render or args.override_stats or args.camera_test is not None or args.cancel_camera_test or args.xr_camera_test):
             raise ValueError("Engine target observation is a separate diagnostic mode")
         if args.reset_trace and not args.render_trace:
             raise ValueError("--reset-trace requires --render-trace")
         if args.world_render and args.render_trace:
             raise ValueError("Select either world render observation or recording trace")
         camera_test = None
-        if args.camera_test is not None or args.cancel_camera_test:
+        if args.xr_camera_test and args.camera_test is not None:
+            raise ValueError("Select synthetic or tracked camera test")
+        if args.camera_test is not None or args.cancel_camera_test or args.xr_camera_test:
             if args.world_render or args.render_trace or args.override_stats:
                 raise ValueError("Camera test is a separate diagnostic mode")
             camera_test = {"cancel": args.cancel_camera_test, "offset": args.camera_test,
-                           "yaw": args.test_yaw, "fov": args.test_fov, "eye": int(args.test_eye == "right")}
+                           "tracked": args.xr_camera_test, "yaw": args.test_yaw, "fov": args.test_fov, "eye": int(args.test_eye == "right")}
         if args.override_stats and (args.world_render or args.render_trace):
             raise ValueError("Override stats are a separate diagnostic mode")
         dll = args.dll or REPO / "build/native/Release" / ("tdvr_capture.dll" if args.render_trace else "tdvr_engine_probe.dll")

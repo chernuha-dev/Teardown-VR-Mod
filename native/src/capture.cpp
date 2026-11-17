@@ -465,13 +465,16 @@ HRESULT WINAPI TdvrEnableXrWorldTiming() {
     s.panel_enabled = true; s.world_timing = true;
     return S_OK;
 }
-HRESULT WINAPI TdvrBeginXrWorldFrame(void*) {
+HRESULT WINAPI TdvrBeginXrWorldFrame(TdvrXrViewSnapshot* current) {
+    if (current && (current->size != sizeof(*current) || current->abi != 1)) return E_INVALIDARG;
+    if (current) *current = {sizeof(TdvrXrViewSnapshot),1};
     auto& s = state();
     std::lock_guard<std::recursive_mutex> lock(s.mutex);
     if (!s.world_timing || !s.panel || s.panel_busy) return S_FALSE;
     s.panel_busy = true;
     const auto begun = s.panel->begin_world_frame();
     s.panel_busy = false;
+    if (begun && current) *current = s.panel->views();
     return begun ? S_OK : S_FALSE;
 }
 HRESULT WINAPI TdvrGetXrViews(TdvrXrViewSnapshot* snapshot) {
