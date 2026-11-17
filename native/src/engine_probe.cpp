@@ -39,6 +39,8 @@ struct State {
     TdvrWorldRenderStats world_stats{sizeof(TdvrWorldRenderStats), 1};
     TdvrEngineTargetStats target_stats{sizeof(TdvrEngineTargetStats), 1};
     TdvrTemporalStats temporal_stats{sizeof(TdvrTemporalStats), 1};
+    TdvrEyeTargetProbeStats eye_target_stats{sizeof(TdvrEyeTargetProbeStats),1};
+    void* retained_eye_targets[2]{}; // bounded diagnostic ownership; no guessed destructor
     TdvrCameraOverride override_camera;
     TdvrTrackedCameraPreview tracked_camera;
     std::atomic<bool> tracked_pending{false};
@@ -195,6 +197,65 @@ TdvrEngineTargetStats observe_target(void* target, uintptr_t game) {
     }
     return result;
 }
+void probe_eye_targets(void* scene, void* target, uintptr_t game) {
+    auto& s = state();
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (s.eye_target_stats.phase != 1 || GetCurrentThreadId() != s.world_stats.first_thread) return;
+        s.eye_target_stats.phase = 4; // running; never repeat a partial allocation
+    }
+    TdvrEyeTargetProbeStats result{sizeof(TdvrEyeTargetProbeStats),1,3};
+    do {
+        uint32_t game_state = 0;
+        if (!read(reinterpret_cast<void*>(game+8),&game_state,sizeof(game_state)) || game_state != 6) { result.failure = 1; break; }
+        std::array<uint8_t,0x38> descriptor{};
+        TdvrTemporalTargetLayout layout{};
+        if (!read(target,descriptor.data(),descriptor.size())
+            || !tdvr_parse_temporal_target(descriptor.data(),descriptor.size(),layout) || layout.color_count != 1) {
+            result.failure = 2; break;
+        }
+        uintptr_t renderer = 0, vtable = 0, factory = 0;
+        const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+        constexpr std::array<uint8_t,21> prefix{{0x48,0x89,0x5c,0x24,0x08,0x55,0x56,0x57,
+            0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x8d,0x6c,0x24,0xf0}};
+        std::array<uint8_t,prefix.size()> observed{};
+        if (!read(static_cast<char*>(scene)+0x9c0,&renderer,sizeof(renderer)) || !renderer
+            || !read(reinterpret_cast<void*>(renderer),&vtable,sizeof(vtable))
+            || !read(reinterpret_cast<void*>(vtable+0x138),&factory,sizeof(factory)) || factory != base+0x5a8610
+            || !read(reinterpret_cast<void*>(factory),observed.data(),observed.size()) || observed != prefix) {
+            result.failure = 3; break;
+        }
+        // Preserve all opaque descriptor fields; change only the audited extents.
+        const uint32_t extent = 64;
+        std::memcpy(descriptor.data(),&extent,sizeof(extent));
+        std::memcpy(descriptor.data()+4,&extent,sizeof(extent));
+        using CreateTarget = void* (*)(void*,const void*,const char*);
+        const auto create = reinterpret_cast<CreateTarget>(factory);
+        bool valid = true;
+        for (unsigned eye = 0; eye < 2; ++eye) {
+            s.retained_eye_targets[eye] = create(reinterpret_cast<void*>(renderer),descriptor.data(),
+                eye ? "tdvr-probe-right" : "tdvr-probe-left");
+            if (!s.retained_eye_targets[eye]) { result.failure = 4; valid = false; break; }
+            ++result.created;
+            result.eyes[eye] = observe_target(s.retained_eye_targets[eye],game);
+            const auto& meta = result.eyes[eye];
+            if (meta.width != 64 || meta.height != 64 || meta.count != 1 || meta.known_mask != 1 || meta.matching_extent_mask != 1) {
+                result.failure = 5; valid = false; break;
+            }
+        }
+        if (!valid) break;
+        uintptr_t resources[2]{};
+        for (unsigned eye = 0; eye < 2; ++eye) {
+            uintptr_t wrapper = 0;
+            valid = valid && read(static_cast<char*>(s.retained_eye_targets[eye])+0x38,&wrapper,sizeof(wrapper)) && wrapper
+                && read(reinterpret_cast<void*>(wrapper+0x38),&resources[eye],sizeof(resources[eye])) && resources[eye];
+        }
+        if (!valid || resources[0] == resources[1] || s.retained_eye_targets[0] == s.retained_eye_targets[1]) { result.failure = 6; break; }
+        result.distinct_resources = 1; result.phase = 2;
+    } while (false);
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.eye_target_stats = result;
+}
 void world_render(void* scene, void* target, void* player, void* camera_object) {
     auto& s = state();
     const auto count = s.world_calls.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -274,6 +335,10 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
             s.tracked_pending.store(false,std::memory_order_release); }
     } else s.world_original(scene, target, player, camera_object);
     s.world_completed.fetch_add(1, std::memory_order_relaxed);
+    if (valid && main_camera) {
+        try { probe_eye_targets(scene,target,game); }
+        catch (...) { std::lock_guard<std::mutex> lock(s.mutex); s.eye_target_stats.phase = 3; s.eye_target_stats.failure = 4; }
+    }
     if (!sample) return;
     TdvrEngineTargetStats targets{sizeof(TdvrEngineTargetStats), 1};
     if (main_camera) {
@@ -379,6 +444,17 @@ HRESULT WINAPI TdvrGetEngineTargetStats(TdvrEngineTargetStats* stats) {
 HRESULT WINAPI TdvrGetTemporalStats(TdvrTemporalStats* stats) {
     if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.temporal_stats; return S_OK;
+}
+HRESULT WINAPI TdvrRequestEyeTargetProbe(void*) {
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.world_stats.hook_installed || !s.world_stats.main_camera_matches || !development_process())
+        return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.eye_target_stats.phase) return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
+    s.eye_target_stats.phase = 1; return S_OK;
+}
+HRESULT WINAPI TdvrGetEyeTargetProbeStats(TdvrEyeTargetProbeStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.eye_target_stats; return S_OK;
 }
 HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request) {
     if (!request || request->size != sizeof(*request) || request->abi != 1) return E_INVALIDARG;

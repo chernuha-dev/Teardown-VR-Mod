@@ -209,3 +209,11 @@ descriptors не изменились внутри sampled render. TAA word в �
 Собственная XR session получила tracked views (flags=15) и отправила
 12422/12422 кадров, XR/GPU errors=0, quarantine=0. Начало XR frame теперь
 связано с world boundary; вывод остаётся quad, не независимым stereo world.
+
+Одноразовая раздельная проба factory подтвердила ABI renderer slot +0x138:
+scene+0x9c0 содержит renderer с entry 0x5a8610, принимающим descriptor и
+NUL-terminated name. Два вызова на render thread создали два отдельных engine
+targets и resources 64×64 RGBA8 UNORM (GetDesc, flags=1, samples=1).
+Targets удерживаются до process exit; не рисовались и не заменяли scene slots.
+Это ограниченное подтверждение creation path, не destructor/resource-state
+контракт и не подтверждение full-size rendering или temporal isolation.

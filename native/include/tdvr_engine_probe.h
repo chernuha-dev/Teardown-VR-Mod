@@ -41,12 +41,21 @@ struct TdvrEngineTargetStats {
     TdvrEngineResourceInfo colors[8]; // GetDesc metadata only; no exported pointers/ownership
 };
 static_assert(sizeof(TdvrEngineResourceInfo) == 40 && sizeof(TdvrEngineTargetStats) == 376, "target diagnostic ABI");
+struct TdvrEyeTargetProbeStats {
+    uint32_t size, abi, phase, created, distinct_resources, failure;
+    TdvrEngineTargetStats eyes[2];
+};
+static_assert(sizeof(TdvrEyeTargetProbeStats) == 776);
 extern "C" {
 TDVR_ENGINE_API HRESULT WINAPI TdvrStartEngineProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetWorldRenderStats(TdvrWorldRenderStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineTargetStats(TdvrEngineTargetStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetTemporalStats(TdvrTemporalStats* stats);
+// One pair of 64x64 engine targets, allocated on the audited render thread.
+// Never installed into scene slots or rendered; retained until process exit.
+TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeTargetProbe(void* unused);
+TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeTargetProbeStats(TdvrEyeTargetProbeStats* stats);
 // Development-only, bounded synthetic camera input. Zero render_calls cancels.
 // Requires a valid audited main-camera observation first. No simulation replay.
 TDVR_ENGINE_API HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request);

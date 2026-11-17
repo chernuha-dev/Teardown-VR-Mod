@@ -58,6 +58,11 @@ class EngineTargetStats(c.Structure):
                 ("colors", EngineResourceInfo * 8)]
 
 
+class EyeTargetProbeStats(c.Structure):
+    _fields_ = [(name,c.c_uint32) for name in ("size","abi","phase","created","distinct_resources","failure")] + [
+        ("eyes",EngineTargetStats * 2)]
+
+
 class RenderTrace(c.Structure):
     _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
                 ("commands", c.c_uint64), ("stack_samples", c.c_uint64), ("dropped", c.c_uint64),
@@ -207,9 +212,12 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
         local = check(k.LoadLibraryW(str(dll)), "load local probe exports")
         try:
             start_address = check(k.GetProcAddress(local, b"TdvrStartControl" if control else (b"TdvrResetTargetTrace" if target_trace else (b"TdvrResetRenderTrace" if render_trace else b"TdvrStartEngineProbe"))), "start export")
+            if engine_targets == 2:
+                start_address = check(k.GetProcAddress(local,b"TdvrRequestEyeTargetProbe"),"target probe request")
             stats_export = b"TdvrGetTargetTrace" if target_trace else (b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else
                             (b"TdvrGetCameraOverrideStats" if override_stats else b"TdvrGetEngineStats")))
             if engine_targets: stats_export = b"TdvrGetEngineTargetStats"
+            if engine_targets == 2: stats_export = b"TdvrGetEyeTargetProbeStats"
             stats_address = start_address if control else check(k.GetProcAddress(local, stats_export), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
             if camera_test is not None:
@@ -257,6 +265,7 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
 
         kind = TargetTrace if target_trace else (RenderTrace if render_trace else (WorldRenderStats if world_render else (CameraOverrideStats if override_stats else EngineStats)))
         if engine_targets: kind = EngineTargetStats
+        if engine_targets == 2: kind = EyeTargetProbeStats
         stats = read_stats(stats_offset, kind)
         if camera_test is not None:
             request = TrackedCameraRequest() if camera_test.get("tracked") else CameraRequest()
@@ -292,6 +301,13 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
                     sample.fov = Fov(*fov)
             exchange(submit_offset, request, readback=False)
             stats = read_stats(override_offset, CameraOverrideStats)
+        if engine_targets == 2:
+            return {"schema_version":1,"runtime_started":False,"observational_only":not load,
+                    **{name:getattr(stats,name) for name in ("phase","created","distinct_resources","failure")},
+                    "eyes":[{"width":v.width,"height":v.height,"count":v.count,"known_mask":v.known_mask,
+                             "matching_extent_mask":v.matching_extent_mask,
+                             "colors":[{"width":t.width,"height":t.height,"format":t.format,"flags":t.flags,
+                                        "samples":t.samples} for t in v.colors[:min(v.count,8)]]} for v in stats.eyes]}
         if engine_targets:
             if stats.count > 8: raise RuntimeError("invalid engine target bounds")
             return {"schema_version": 1, "observational_only": True, "runtime_started": False,
@@ -332,6 +348,7 @@ def main():
     parser.add_argument("--target-trace", action="store_true", help="Read observed RTV resource descriptions and binding call stacks")
     parser.add_argument("--world-render", action="store_true", help="Observe the audited scene render boundary without changing its arguments")
     parser.add_argument("--engine-targets", action="store_true", help="Read verified D3D12 resource metadata for the world-render output")
+    parser.add_argument("--create-eye-targets", action="store_true", help="One render-thread allocation probe of two 64x64 engine targets; requires an attached engine probe")
     parser.add_argument("--reset-trace", action="store_true", help="Rearm the capture trace window for the current scene")
     parser.add_argument("--camera-test", type=float, nargs=3, metavar=("X", "Y", "Z"), help="Apply a synthetic eye offset in metres for <=10 seconds, only in development")
     parser.add_argument("--test-yaw", type=float, default=0, help="Synthetic local yaw in degrees")
@@ -342,6 +359,9 @@ def main():
     parser.add_argument("--override-stats", action="store_true")
     args = parser.parse_args()
     try:
+        if args.create_eye_targets:
+            if args.engine_targets: raise ValueError("Select target observation or target creation")
+            args.engine_targets = 2
         if args.target_trace and args.render_trace:
             raise ValueError("Select target trace or recording trace")
         args.render_trace = args.render_trace or args.target_trace

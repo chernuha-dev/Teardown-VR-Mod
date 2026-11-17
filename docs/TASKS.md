@@ -286,6 +286,18 @@ XR/GPU=0, quarantine=0. Без Computer Use, живой каталог не из
 Картинка в шлеме на этом срезе визуально не проверена; stereo world, руки и
 headset comfort не подтверждены. DEV-004 и VR-101/102/103 остаются открытыми.
 
+DEV-004/005/VR-102: разовая development-проба использовала проверенную фабрику
+renderer +0x138 на render thread. Созданы два engine framebuffer targets 64×64:
+отдельные wrappers и ID3D12Resource, RGBA8 UNORM, render-target flag, sample=1.
+GetDesc обоих прошёл trusted Core gate; повторный запрос отвергнут ALREADY_EXISTS.
+Сцена/history pointers не подменяются, targets не рисуются и удерживаются до
+process exit (деструктор/idle ownership пока не доказаны). Это подтверждение
+allocator ABI и независимых engine objects, не готовые eye histories/stereo.
+Runtime: phase=2, created=2, distinct=1, failure=0; XR/GPU=0, quarantine=0.
+Build-Native.ps1 build/native-trace, CTest 20/20, Python 21/21 прошли.
+Первая сборка столкнулась с DLL, загруженной в dev-процесс; после штатного
+завершения именно этой копии повторная сборка успешна. Живая игра не менялась.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

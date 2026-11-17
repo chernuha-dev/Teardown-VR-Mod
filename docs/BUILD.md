@@ -649,3 +649,41 @@ Runtime 2026-11-17: новая сборка запущена в development-ко
 budget. Панель отправила 3496/3496 frames, XR/GPU=0, quarantine=0. Это проверка
 hook, поз и восстановления через API; визуальная правильность rendered camera,
 frustum caches и комфорт шлема в этом срезе не проверялись.
+
+### Engine-owned eye target allocation probe
+
+После подключения --world-render и наблюдения main camera можно один раз
+создать пару небольших engine framebuffer targets на render thread:
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native-trace/Release/tdvr_engine_probe.dll --create-eye-targets
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native-trace/Release/tdvr_engine_probe.dll --create-eye-targets --stats-only
+```
+
+--stats-only не ставит allocation request. Request требует development process
+и audited hook; выполнение — main-camera render thread, game state 6. Проверяются
+scene+0x9c0 renderer, slot +0x138 == image base +0x5a8610 и entry bytes фабрики.
+Descriptor output target клонируется с сохранением неизвестных полей; меняются
+только width/height на 64, поддерживается один color attachment. ABI фабрики:
+pointer(renderer*, descriptor*, const char* name), подтверждён по потоку
+инструкций, включая name constructor, который читает NUL-terminated строку.
+
+TdvrEyeTargetProbeStats ABI 1, 776 bytes: phase 0 idle / 1 queued / 4 running /
+2 completed / 3 rejected. failure 1 gameplay / 2 descriptor / 3 factory guard /
+4 allocation / 5 resource metadata / 6 alias. created считает возвращённые
+объекты успешного обычного пути; exceptional abort не даёт полного allocation
+отчёта. Публикуются метаданные, без адресов. Probe одноразовый, в том числе после
+partial failure; попытка повторить возвращает ERROR_ALREADY_EXISTS.
+
+Targets удерживаются до process exit. Это намеренно ограниченная diagnostic
+allocation, не production cleanup: неизвестные destructor/GPU idle semantics
+не используются. Engine сам создаёт вложенные texture wrappers; чужие pointers
+в Game/scene не заменяются. GPU work для рисования в эти targets не добавляется.
+GetDesc после trusted COM gate и проверка разных resource identities не доказывают
+resource states, работу history banks или правильность будущего eye render.
+
+В development-игре: phase=2, created=2, distinct_resources=1, failure=0;
+оба color resources 64×64, DXGI_FORMAT_R8G8B8A8_UNORM (28), flags=1, samples=1.
+Повторный request отвергнут, created остался 2. XR panel 672/672 submitted,
+XR/GPU=0, quarantine=0. Unknown-host gate test не вызывает factory.
+Build-Native.ps1 -BuildDirectory build/native-trace и CTest 20/20, Python 21/21.

@@ -20,6 +20,11 @@ int main() {
     targets.size = sizeof(targets); targets.abi = 1;
     if (FAILED(TdvrGetEngineTargetStats(&targets)) || targets.samples || targets.known_mask || targets.count) return 1;
     TdvrTemporalStats temporal{};
+    TdvrEyeTargetProbeStats eye_targets{};
+    if (TdvrRequestEyeTargetProbe(nullptr) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
+        || TdvrGetEyeTargetProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeTargetProbeStats(&eye_targets) != E_INVALIDARG) return 1;
+    eye_targets.size = sizeof(eye_targets); eye_targets.abi = 1;
+    if (FAILED(TdvrGetEyeTargetProbeStats(&eye_targets)) || eye_targets.phase || eye_targets.created) return 1;
     if (TdvrGetTemporalStats(nullptr) != E_INVALIDARG || TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;
     temporal.size = sizeof(temporal); temporal.abi = 2;
     if (TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;
