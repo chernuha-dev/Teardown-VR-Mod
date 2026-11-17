@@ -298,6 +298,18 @@ Build-Native.ps1 build/native-trace, CTest 20/20, Python 21/21 прошли.
 Первая сборка столкнулась с DLL, загруженной в dev-процесс; после штатного
 завершения именно этой копии повторная сборка успешна. Живая игра не менялась.
 
+DEV-004/VR-102: собственная engine allocation теперь создаёт два полных набора
+по десять scene framebuffer targets. До allocation — проверка source nested
+resources, single-node device, GetResourceAllocationInfo и текущего DXGI budget
+с reserve 384 MiB. После — точное сравнение descriptors/GetDesc и canonical
+resource identities, проверка неизменности source temporal state. В игре
+созданы 20 независимых targets без ошибок: 322.5 MiB estimate, исходные
+3440×1440/1720×720 и formats 54/26/10/62 сохранены. Повторное выделение отвергнуто.
+Наборы удерживаются до process exit; scene pointers не подменяются. TAA textures,
+CPU previous state, reset/initialization и stereo passes остаются следующими
+частями. Build-Native.ps1 build/native, CTest 20/20 и Python 21/21 прошли;
+финальный engine gate/CTest build/native-trace также прошли. API — BUILD.md.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

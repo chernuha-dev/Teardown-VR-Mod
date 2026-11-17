@@ -25,6 +25,11 @@ int main() {
         || TdvrGetEyeTargetProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeTargetProbeStats(&eye_targets) != E_INVALIDARG) return 1;
     eye_targets.size = sizeof(eye_targets); eye_targets.abi = 1;
     if (FAILED(TdvrGetEyeTargetProbeStats(&eye_targets)) || eye_targets.phase || eye_targets.created) return 1;
+    TdvrEyeHistoryProbeStats histories{};
+    if (TdvrRequestEyeHistoryProbe(nullptr) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
+        || TdvrGetEyeHistoryProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeHistoryProbeStats(&histories) != E_INVALIDARG) return 1;
+    histories.size = sizeof(histories); histories.abi = 1;
+    if (FAILED(TdvrGetEyeHistoryProbeStats(&histories)) || histories.phase || histories.created || histories.required_bytes) return 1;
     if (TdvrGetTemporalStats(nullptr) != E_INVALIDARG || TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;
     temporal.size = sizeof(temporal); temporal.abi = 2;
     if (TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;

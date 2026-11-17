@@ -687,3 +687,49 @@ resource states, работу history banks или правильность бу
 Повторный request отвергнут, created остался 2. XR panel 672/672 submitted,
 XR/GPU=0, quarantine=0. Unknown-host gate test не вызывает factory.
 Build-Native.ps1 -BuildDirectory build/native-trace и CTest 20/20, Python 21/21.
+
+### Independent engine framebuffer banks
+
+--allocate-eye-histories расширяет allocation path до всех десяти scene
+framebuffer objects на каждый глаз, сохраняя полный descriptor и разрешение:
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native-trace/Release/tdvr_engine_probe.dll --allocate-eye-histories
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native-trace/Release/tdvr_engine_probe.dll --allocate-eye-histories --stats-only
+```
+
+Только development/gameplay/render-thread, один запрос на process. Source layouts
+должны все пройти parser. Каждый color/depth wrapper проходит trusted Core/QI;
+все resources должны принадлежать одному single-node device. Ненулевой auxiliary
+target +0x80 отвергается. Размер выделения оценивается для каждого настоящего
+resource descriptor через [GetResourceAllocationInfo](https://learn.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device-getresourceallocationinfo%28uint_uint_constd3d12_resource_desc%29),
+с проверкой UINT64_MAX и overflow. До allocation проверяется текущий local budget
+адаптера игры через [QueryVideoMemoryInfo](https://learn.microsoft.com/en-us/windows/win32/api/dxgi1_4/nf-dxgi1_4-idxgiadapter3-queryvideomemoryinfo).
+Требуются место для двух banks и дополнительные 384 MiB. Это snapshot бюджета,
+не reservation и не гарантия отсутствия параллельных allocations.
+
+Создание через ту же audited engine factory. Все descriptor bytes должны
+совпасть с source; nested GetDesc (extent, format, flags, samples, mips, layers,
+alignment/layout) — также. Canonical IUnknown identities исключают alias с
+source или другим новым attachment. Проверяется отсутствие изменений source
+scene pointers, descriptors, TAA slots/word, serial/history/reset за allocation.
+Двадцать targets удерживаются до process exit, включая partial failure.
+Никакого resize/free/guessed idle или установки pointers в scene пока нет.
+
+TdvrEyeHistoryProbeStats ABI 1 / 7568 bytes. Phase как у target probe; failure
+1 gameplay / 2 source layout / 3 factory / 4 allocation или exception /
+5 source/new resource validation / 6 target alias / 7 budget API / 8 budget /
+9 source temporal state changed. Exceptional abort не даёт полного allocation
+отчёта. Повторный request отвергается ALREADY_EXISTS; --stats-only только читает.
+
+В development-игре 2026-11-17: created=20, phase=2, failure=0, distinct=1.
+Оба banks: шесть full-size 3440×1440 targets с DXGI formats 54/54/26/26/10/10,
+два half-size 1720×720 с format 26 и два full-size с format 62. Allocation
+estimate 338165760 bytes (322.5 MiB); budget 16326553600, usage перед созданием
+2554322944. Повторный request отвергнут, created остался 20. XR panel 2082/2082,
+XR/GPU=0, quarantine=0. Build-Native.ps1 build/native, CTest 20/20 и Python
+21/21 прошли; final engine build/gate и CTest build/native-trace также прошли.
+
+Это framebuffer-часть будущих history banks. Пять TAA texture objects на глаз,
+CPU previous matrices/history switching, initialization/reset и stereo replay
+ещё не подключены. Новые targets пока не использовались для рисования.

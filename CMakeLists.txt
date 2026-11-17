@@ -77,7 +77,7 @@ if(WIN32 AND TDVR_BUILD_DIAGNOSTICS)
   add_library(tdvr_engine_probe SHARED native/src/engine_probe.cpp native/src/engine_camera.cpp native/src/camera_override.cpp native/src/tracking_camera.cpp)
   target_include_directories(tdvr_engine_probe PUBLIC native/include)
   target_compile_definitions(tdvr_engine_probe PRIVATE TDVR_ENGINE_BUILD NOMINMAX WIN32_LEAN_AND_MEAN)
-  target_link_libraries(tdvr_engine_probe PRIVATE tdvr_math_static tdvr_temporal_observer minhook bcrypt d3d12 dxguid)
+  target_link_libraries(tdvr_engine_probe PRIVATE tdvr_math_static tdvr_temporal_observer minhook bcrypt d3d12 dxgi dxguid)
   target_compile_options(tdvr_engine_probe PRIVATE /W4 /WX /permissive-)
   add_custom_command(TARGET tdvr_engine_probe POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

@@ -12,6 +12,9 @@
 #include <cstring>
 #include <cwctype>
 #include <d3d12.h>
+#include <dxgi1_4.h>
+#include <set>
+#include <limits>
 #include <wrl/client.h>
 
 namespace {
@@ -41,6 +44,8 @@ struct State {
     TdvrTemporalStats temporal_stats{sizeof(TdvrTemporalStats), 1};
     TdvrEyeTargetProbeStats eye_target_stats{sizeof(TdvrEyeTargetProbeStats),1};
     void* retained_eye_targets[2]{}; // bounded diagnostic ownership; no guessed destructor
+    TdvrEyeHistoryProbeStats eye_history_stats{sizeof(TdvrEyeHistoryProbeStats),1};
+    void* retained_eye_histories[2][10]{};
     TdvrCameraOverride override_camera;
     TdvrTrackedCameraPreview tracked_camera;
     std::atomic<bool> tracked_pending{false};
@@ -162,6 +167,34 @@ void camera(void* object, const float* position, const float* orientation) {
     observe(object, position, orientation);
 }
 struct RenderState { uint64_t serial; uint32_t history_a, history_b; };
+Microsoft::WRL::ComPtr<ID3D12Resource> trusted_resource(uintptr_t wrapper) {
+    Microsoft::WRL::ComPtr<ID3D12Resource> result;
+    const auto core = trusted_d3d12_core();
+    uintptr_t resource = 0, vtable = 0, table[11]{};
+    if (!core || !wrapper || !read(reinterpret_cast<void*>(wrapper+0x38),&resource,sizeof(resource)) || !resource
+        || !read(reinterpret_cast<void*>(resource),&vtable,sizeof(vtable))
+        || !read(reinterpret_cast<void*>(vtable),table,sizeof(table))) return result;
+    for (const auto slot : {0,7,10}) {
+        HMODULE owner = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(table[slot]),&owner) || owner != core) return result;
+    }
+    reinterpret_cast<IUnknown*>(resource)->QueryInterface(IID_PPV_ARGS(&result));
+    return result;
+}
+using CreateTarget = void* (*)(void*,const void*,const char*);
+CreateTarget target_factory(void* scene, uintptr_t& renderer) {
+    uintptr_t vtable = 0, factory = 0;
+    const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    constexpr std::array<uint8_t,21> prefix{{0x48,0x89,0x5c,0x24,0x08,0x55,0x56,0x57,
+        0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x8d,0x6c,0x24,0xf0}};
+    std::array<uint8_t,prefix.size()> observed{};
+    if (!read(static_cast<char*>(scene)+0x9c0,&renderer,sizeof(renderer)) || !renderer
+        || !read(reinterpret_cast<void*>(renderer),&vtable,sizeof(vtable))
+        || !read(reinterpret_cast<void*>(vtable+0x138),&factory,sizeof(factory)) || factory != base+0x5a8610
+        || !read(reinterpret_cast<void*>(factory),observed.data(),observed.size()) || observed != prefix) return nullptr;
+    return reinterpret_cast<CreateTarget>(factory);
+}
 // Only the audited target/wrapper layout, on the render thread after the engine
 // used it. Never invoke arbitrary candidate vtables or dereference from an RPC.
 TdvrEngineTargetStats observe_target(void* target, uintptr_t game) {
@@ -170,23 +203,11 @@ TdvrEngineTargetStats observe_target(void* target, uintptr_t game) {
     if (!read(target, &result.width, 2*sizeof(uint32_t))
         || !read(static_cast<char*>(target)+0x30, &result.count, sizeof(result.count))
         || !result.count || result.count > 8 || !result.width || !result.height) return result;
-    const auto core = trusted_d3d12_core();
-    if (!core) return result;
     for (uint32_t i = 0; i < result.count; ++i) {
-        uintptr_t wrapper = 0, resource = 0, table[11]{}, vtable = 0;
-        if (!read(static_cast<char*>(target)+0x38+i*sizeof(uintptr_t), &wrapper, sizeof(wrapper)) || !wrapper
-            || !read(reinterpret_cast<void*>(wrapper+0x38), &resource, sizeof(resource)) || !resource
-            || !read(reinterpret_cast<void*>(resource), &vtable, sizeof(vtable))
-            || !read(reinterpret_cast<void*>(vtable), table, sizeof(table))) continue;
-        bool trusted = true;
-        for (const auto slot : {0, 7, 10}) {
-            HMODULE owner = nullptr;
-            if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(table[slot]), &owner) || owner != core) trusted = false;
-        }
-        if (!trusted) continue;
-        Microsoft::WRL::ComPtr<ID3D12Resource> confirmed;
-        if (FAILED(reinterpret_cast<IUnknown*>(resource)->QueryInterface(IID_PPV_ARGS(&confirmed)))) continue;
+        uintptr_t wrapper = 0;
+        if (!read(static_cast<char*>(target)+0x38+i*sizeof(uintptr_t),&wrapper,sizeof(wrapper))) continue;
+        auto confirmed = trusted_resource(wrapper);
+        if (!confirmed) continue;
         const auto desc = confirmed->GetDesc();
         result.colors[i] = {desc.Width, desc.Height, static_cast<uint32_t>(desc.Format),
             static_cast<uint32_t>(desc.Flags), desc.SampleDesc.Count, static_cast<uint32_t>(desc.Dimension),
@@ -214,23 +235,15 @@ void probe_eye_targets(void* scene, void* target, uintptr_t game) {
             || !tdvr_parse_temporal_target(descriptor.data(),descriptor.size(),layout) || layout.color_count != 1) {
             result.failure = 2; break;
         }
-        uintptr_t renderer = 0, vtable = 0, factory = 0;
-        const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-        constexpr std::array<uint8_t,21> prefix{{0x48,0x89,0x5c,0x24,0x08,0x55,0x56,0x57,
-            0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x8d,0x6c,0x24,0xf0}};
-        std::array<uint8_t,prefix.size()> observed{};
-        if (!read(static_cast<char*>(scene)+0x9c0,&renderer,sizeof(renderer)) || !renderer
-            || !read(reinterpret_cast<void*>(renderer),&vtable,sizeof(vtable))
-            || !read(reinterpret_cast<void*>(vtable+0x138),&factory,sizeof(factory)) || factory != base+0x5a8610
-            || !read(reinterpret_cast<void*>(factory),observed.data(),observed.size()) || observed != prefix) {
+        uintptr_t renderer = 0;
+        const auto create = target_factory(scene,renderer);
+        if (!create) {
             result.failure = 3; break;
         }
         // Preserve all opaque descriptor fields; change only the audited extents.
         const uint32_t extent = 64;
         std::memcpy(descriptor.data(),&extent,sizeof(extent));
         std::memcpy(descriptor.data()+4,&extent,sizeof(extent));
-        using CreateTarget = void* (*)(void*,const void*,const char*);
-        const auto create = reinterpret_cast<CreateTarget>(factory);
         bool valid = true;
         for (unsigned eye = 0; eye < 2; ++eye) {
             s.retained_eye_targets[eye] = create(reinterpret_cast<void*>(renderer),descriptor.data(),
@@ -255,6 +268,111 @@ void probe_eye_targets(void* scene, void* target, uintptr_t game) {
     } while (false);
     std::lock_guard<std::mutex> lock(s.mutex);
     s.eye_target_stats = result;
+}
+void probe_eye_histories(void* scene, uintptr_t game) {
+    auto& s = state();
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        if (s.eye_history_stats.phase != 1 || GetCurrentThreadId() != s.world_stats.first_thread) return;
+        s.eye_history_stats.phase = 4;
+    }
+    TdvrEyeHistoryProbeStats result{sizeof(TdvrEyeHistoryProbeStats),1,3};
+    do {
+        uint32_t game_state = 0;
+        if (!read(reinterpret_cast<void*>(game+8),&game_state,sizeof(game_state)) || game_state != 6) { result.failure = 1; break; }
+        uintptr_t renderer = 0;
+        const auto create = target_factory(scene,renderer);
+        if (!create) { result.failure = 3; break; }
+        TdvrTemporalObservation source;
+        if (!tdvr_observe_temporal(reinterpret_cast<uintptr_t>(scene),temporal_read,nullptr,source)
+            || source.state.target_layout_mask != 0x3ff) { result.failure = 2; break; }
+        using Microsoft::WRL::ComPtr;
+        ComPtr<ID3D12Device> device;
+        std::set<IUnknown*> identities;
+        std::set<void*> targets;
+        std::array<std::array<D3D12_RESOURCE_DESC,9>,10> descriptions{};
+        uint64_t source_bytes = 0;
+        // Validate every nested attachment before any allocation. No unknown
+        // auxiliary target, cross-device allocation, or guessed DXGI format.
+        auto inspect = [&](void* target, unsigned slot, bool is_new) {
+            const auto& layout = source.targets[slot];
+            uintptr_t auxiliary = 0;
+            if (!read(static_cast<char*>(target)+0x80,&auxiliary,sizeof(auxiliary)) || auxiliary) return false;
+            const auto count = layout.color_count + (layout.depth_enabled ? 1u : 0u);
+            for (unsigned attachment = 0; attachment < count; ++attachment) {
+                uintptr_t wrapper = 0;
+                const auto offset = attachment < layout.color_count ? 0x38+attachment*8 : 0x78;
+                if (!read(static_cast<char*>(target)+offset,&wrapper,sizeof(wrapper))) return false;
+                auto resource = trusted_resource(wrapper);
+                if (!resource) return false;
+                ComPtr<ID3D12Device> owner;
+                if (FAILED(resource->GetDevice(IID_PPV_ARGS(&owner)))) return false;
+                if (!device) device = owner;
+                if (device.Get() != owner.Get()) return false;
+                ComPtr<IUnknown> identity;
+                if (FAILED(resource.As(&identity))) return false;
+                const auto inserted = identities.insert(identity.Get()).second;
+                if (is_new && !inserted) return false;
+                const auto desc = resource->GetDesc();
+                if (!is_new) {
+                    descriptions[slot][attachment] = desc;
+                    const auto info = device->GetResourceAllocationInfo(0,1,&desc);
+                    if (!info.SizeInBytes || info.SizeInBytes == std::numeric_limits<uint64_t>::max()
+                        || source_bytes > std::numeric_limits<uint64_t>::max()-info.SizeInBytes) return false;
+                    source_bytes += info.SizeInBytes;
+                } else {
+                    const auto& expected = descriptions[slot][attachment];
+                    if (desc.Dimension != expected.Dimension || desc.Alignment != expected.Alignment
+                        || desc.Width != expected.Width || desc.Height != expected.Height
+                        || desc.DepthOrArraySize != expected.DepthOrArraySize || desc.MipLevels != expected.MipLevels
+                        || desc.Format != expected.Format || desc.SampleDesc.Count != expected.SampleDesc.Count
+                        || desc.SampleDesc.Quality != expected.SampleDesc.Quality || desc.Layout != expected.Layout
+                        || desc.Flags != expected.Flags) return false;
+                }
+            }
+            return true;
+        };
+        bool valid = true;
+        for (unsigned slot = 0; slot < 10; ++slot) {
+            auto* target = reinterpret_cast<void*>(source.scene_buffers[slot]);
+            targets.insert(target);
+            if (!inspect(target,slot,false)) { valid = false; break; }
+        }
+        if (!valid || !device || device->GetNodeCount() != 1 || source_bytes > std::numeric_limits<uint64_t>::max()/2) { result.failure = 5; break; }
+        result.required_bytes = source_bytes*2;
+        ComPtr<IDXGIFactory4> factory;
+        ComPtr<IDXGIAdapter3> adapter;
+        DXGI_QUERY_VIDEO_MEMORY_INFO memory{};
+        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))
+            || FAILED(factory->EnumAdapterByLuid(device->GetAdapterLuid(),IID_PPV_ARGS(&adapter)))
+            || FAILED(adapter->QueryVideoMemoryInfo(0,DXGI_MEMORY_SEGMENT_GROUP_LOCAL,&memory))) { result.failure = 7; break; }
+        result.budget_bytes = memory.Budget; result.usage_bytes = memory.CurrentUsage;
+        constexpr uint64_t reserve = 384ull*1024*1024;
+        if (memory.CurrentUsage >= memory.Budget || memory.Budget-memory.CurrentUsage <= reserve
+            || result.required_bytes > memory.Budget-memory.CurrentUsage-reserve) { result.failure = 8; break; }
+        for (unsigned eye = 0; eye < 2 && valid; ++eye) for (unsigned slot = 0; slot < 10 && valid; ++slot) {
+            const std::string name = std::string("tdvr-history-")+(eye ? "right-" : "left-")+std::to_string(slot);
+            auto*& target = s.retained_eye_histories[eye][slot];
+            target = create(reinterpret_cast<void*>(renderer),source.descriptors[slot].data(),name.c_str());
+            if (!target) { result.failure = 4; valid = false; break; }
+            ++result.created;
+            if (!targets.insert(target).second) { result.failure = 6; valid = false; break; }
+            std::array<uint8_t,0x38> actual{};
+            if (!read(target,actual.data(),actual.size()) || actual != source.descriptors[slot]
+                || !inspect(target,slot,true)) { result.failure = 5; valid = false; break; }
+            result.targets[eye][slot] = observe_target(target,game);
+        }
+        if (!valid) break;
+        TdvrTemporalObservation after;
+        if (!tdvr_observe_temporal(reinterpret_cast<uintptr_t>(scene),temporal_read,nullptr,after)
+            || after.state.target_layout_mask != 0x3ff || source.scene_buffers != after.scene_buffers
+            || source.taa_resources != after.taa_resources || source.descriptors != after.descriptors
+            || source.state.serial != after.state.serial || source.state.history[0] != after.state.history[0]
+            || source.state.history[1] != after.state.history[1] || source.state.reset_flag != after.state.reset_flag
+            || source.state.taa_word != after.state.taa_word) { result.failure = 9; break; }
+        result.distinct_resources = 1; result.phase = 2;
+    } while (false);
+    std::lock_guard<std::mutex> lock(s.mutex); s.eye_history_stats = result;
 }
 void world_render(void* scene, void* target, void* player, void* camera_object) {
     auto& s = state();
@@ -338,6 +456,8 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     if (valid && main_camera) {
         try { probe_eye_targets(scene,target,game); }
         catch (...) { std::lock_guard<std::mutex> lock(s.mutex); s.eye_target_stats.phase = 3; s.eye_target_stats.failure = 4; }
+        try { probe_eye_histories(scene,game); }
+        catch (...) { std::lock_guard<std::mutex> lock(s.mutex); s.eye_history_stats.phase = 3; s.eye_history_stats.failure = 4; }
     }
     if (!sample) return;
     TdvrEngineTargetStats targets{sizeof(TdvrEngineTargetStats), 1};
@@ -455,6 +575,17 @@ HRESULT WINAPI TdvrRequestEyeTargetProbe(void*) {
 HRESULT WINAPI TdvrGetEyeTargetProbeStats(TdvrEyeTargetProbeStats* stats) {
     if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.eye_target_stats; return S_OK;
+}
+HRESULT WINAPI TdvrRequestEyeHistoryProbe(void*) {
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.world_stats.hook_installed || !s.world_stats.main_camera_matches || !development_process())
+        return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.eye_history_stats.phase) return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
+    s.eye_history_stats.phase = 1; return S_OK;
+}
+HRESULT WINAPI TdvrGetEyeHistoryProbeStats(TdvrEyeHistoryProbeStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.eye_history_stats; return S_OK;
 }
 HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request) {
     if (!request || request->size != sizeof(*request) || request->abi != 1) return E_INVALIDARG;
