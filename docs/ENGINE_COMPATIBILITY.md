@@ -217,3 +217,15 @@ targets и resources 64×64 RGBA8 UNORM (GetDesc, flags=1, samples=1).
 Targets удерживаются до process exit; не рисовались и не заменяли scene slots.
 Это ограниченное подтверждение creation path, не destructor/resource-state
 контракт и не подтверждение full-size rendering или temporal isolation.
+
+Следующая проба создала обе full-size framebuffer banks (20 targets) и оба TAA
+набора (10 texture wrappers). Texture factory slot +0xe8 (0x5a9000) принимает
+renderer, descriptor, optional initial data и C-string name; base constructor
+0x5ddae0 копирует 0x1c bytes descriptor, а вычисленное mip state пишет в +0x1c.
+TAA creation 0xa41a0 на D3D12-ветке использует engine formats 12/12/26/26/12
+(hex), texture descriptor в stack и null initial data. Эти engine formats
+соответствовали GetDesc 26/26/54/54/26 в проверенном запуске, не общей таблице.
+Все 30 новых объектов имеют независимые ресурсы, source CPU state не изменился.
+Estimate 486 MiB при исходных extents/precision; они удерживаются до process
+exit и ещё не использовались в render passes. Destructor, reset/initialization,
+CPU history switching и синхронный replay этим не подтверждаются.

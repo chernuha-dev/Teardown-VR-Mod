@@ -52,6 +52,12 @@ struct TdvrEyeHistoryProbeStats {
     TdvrEngineTargetStats targets[2][10];
 };
 static_assert(sizeof(TdvrEyeHistoryProbeStats) == 7568);
+struct TdvrEyeTaaProbeStats {
+    uint32_t size, abi, phase, created, failure, distinct_resources;
+    uint64_t required_bytes, budget_bytes, usage_bytes;
+    TdvrEngineResourceInfo textures[2][5];
+};
+static_assert(sizeof(TdvrEyeTaaProbeStats) == 448);
 extern "C" {
 TDVR_ENGINE_API HRESULT WINAPI TdvrStartEngineProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats);
@@ -64,6 +70,8 @@ TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeTargetProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeTargetProbeStats(TdvrEyeTargetProbeStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeHistoryProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeHistoryProbeStats(TdvrEyeHistoryProbeStats* stats);
+TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeTaaProbe(void* unused);
+TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeTaaProbeStats(TdvrEyeTaaProbeStats* stats);
 // Development-only, bounded synthetic camera input. Zero render_calls cancels.
 // Requires a valid audited main-camera observation first. No simulation replay.
 TDVR_ENGINE_API HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request);

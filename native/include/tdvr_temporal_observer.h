@@ -28,6 +28,11 @@ struct TdvrTemporalTargetLayout {
 };
 bool tdvr_parse_temporal_target(const void* bytes, size_t size, TdvrTemporalTargetLayout& output);
 
+// Audited D3D12 TAA texture descriptor, not the complete 0x88 wrapper.
+// Only the supported single-mip 2D form and the two observed engine formats.
+struct TdvrTaaTextureLayout { uint32_t width, height, engine_format; };
+bool tdvr_parse_taa_texture(const void* bytes, size_t size, TdvrTaaTextureLayout& output);
+
 // Internal observations retain addresses only for comparison, never export them.
 struct TdvrTemporalObservation {
     TdvrTemporalState state{};

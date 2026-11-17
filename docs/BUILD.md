@@ -733,3 +733,53 @@ XR/GPU=0, quarantine=0. Build-Native.ps1 build/native, CTest 20/20 и Python
 Это framebuffer-часть будущих history banks. Пять TAA texture objects на глаз,
 CPU previous matrices/history switching, initialization/reset и stereo replay
 ещё не подключены. Новые targets пока не использовались для рисования.
+
+### Independent TAA textures
+
+После успешного --allocate-eye-histories можно один раз выделить собственные
+пять TAA texture wrappers на глаз:
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native/Release/tdvr_engine_probe.dll --allocate-eye-taa
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native/Release/tdvr_engine_probe.dll --allocate-eye-taa --stats-only
+```
+
+Требуются completed framebuffer banks, main-camera render thread, gameplay и
+development gates. Проверяются scene renderer, TAA+8 renderer и texture factory
+slot +0xe8 → RVA 0x5a9000 с runtime entry bytes. Подтверждённый ABI:
+texture(renderer*, descriptor*, initial_data*, const char* name); initial_data
+всегда null. Source texture wrapper хранит копию 0x1c descriptor bytes; поле
++0x1c уже содержит вычисленное mip state и не является частью input descriptor.
+Новые wrappers и ресурсы создаёт сам движок; сторонний C++-код не копируется.
+
+CPU parser ограничен наблюдавшейся формой TAA: 2D, одна layer/depth и один mip,
+engine formats 0x12/0x26. Проверяется порядок 12/12/26/26/12, extents против
+TAA+0x10/+0x14 и настоящего GetDesc. Engine codes не объявляются DXGI_FORMAT.
+Budget gate общий с framebuffer banks (single-node device, allocation estimate,
+текущий local usage и reserve 384 MiB). Canonical identities исключают alias с
+source TAA, original framebuffer attachments и обеими собственными banks.
+Stale framebuffer descriptors после resize отвергаются до allocation.
+
+После создания сверяются полные source/new descriptors и GetDesc. Пять исходных
+texture descriptor prefixes, весь TAA CPU object 0x78 bytes, scene pointers,
+history/serial/reset должны остаться неизменными. Объекты удерживаются до process
+exit; partial failure также не освобождается по неизвестному destructor ABI.
+TdvrEyeTaaProbeStats ABI 1 / 448 bytes, phase/failure как у history allocation;
+failure 6 включает wrapper/identity/descriptor validation. Повторный request
+ALREADY_EXISTS, --stats-only не выделяет память. При exception created отражает
+только wrappers, адреса которых успели вернуться и сохраниться.
+
+Runtime 2026-11-17: phase=2, created=10, failure=0, distinct=1. Все textures
+3440×1440, flags=4, samples/mips/layers=1; GetDesc formats 26/26/54/54/26 на
+каждый глаз. Estimate 171442176 bytes (163.5 MiB); budget 16326553600,
+usage 4183416832 до TAA allocation. Вместе с framebuffer banks estimate
+509607936 bytes (486 MiB). Повторный запрос отвергнут, created остался 10.
+XR/GPU=0, quarantine=0; sampled source state unchanged. Build-Native.ps1
+build/native, CTest 20/20, Python 21/21; final engine gate/CTest также прошли.
+Parser CPU test покрывает обе engine formats, extents, dimension/depth/layers,
+mips, unknown format, length/null и неизменность output при отказе.
+
+GPU allocation для обоих глаз теперь включает и framebuffer targets, и TAA
+textures. Их contents ещё не инициализированы для eye history; CPU state switching,
+первый reset и сами eye render passes остаются следующими частями. Новые ресурсы
+пока не устанавливались в scene/TAA slots и не использовались для рисования.

@@ -30,6 +30,11 @@ int main() {
         || TdvrGetEyeHistoryProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeHistoryProbeStats(&histories) != E_INVALIDARG) return 1;
     histories.size = sizeof(histories); histories.abi = 1;
     if (FAILED(TdvrGetEyeHistoryProbeStats(&histories)) || histories.phase || histories.created || histories.required_bytes) return 1;
+    TdvrEyeTaaProbeStats taa_textures{};
+    if (TdvrRequestEyeTaaProbe(nullptr) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
+        || TdvrGetEyeTaaProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeTaaProbeStats(&taa_textures) != E_INVALIDARG) return 1;
+    taa_textures.size = sizeof(taa_textures); taa_textures.abi = 1;
+    if (FAILED(TdvrGetEyeTaaProbeStats(&taa_textures)) || taa_textures.phase || taa_textures.created) return 1;
     if (TdvrGetTemporalStats(nullptr) != E_INVALIDARG || TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;
     temporal.size = sizeof(temporal); temporal.abi = 2;
     if (TdvrGetTemporalStats(&temporal) != E_INVALIDARG) return 1;

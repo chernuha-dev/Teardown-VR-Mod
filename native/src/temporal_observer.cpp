@@ -3,6 +3,19 @@
 #include <cstring>
 #include <limits>
 
+bool tdvr_parse_taa_texture(const void* bytes, size_t size, TdvrTaaTextureLayout& output) {
+    if (!bytes || size != 0x1c) return false;
+    const auto* p = static_cast<const uint8_t*>(bytes);
+    auto word = [&](size_t offset) -> uint32_t {
+        return uint32_t(p[offset]) | (uint32_t(p[offset+1]) << 8) | (uint32_t(p[offset+2]) << 16) | (uint32_t(p[offset+3]) << 24);
+    };
+    const TdvrTaaTextureLayout result{word(4),word(8),word(0x14)};
+    if (p[0] != 0 || !result.width || result.width > 16384 || !result.height || result.height > 16384
+        || word(0xc) != 1 || word(0x10) != 1 || p[0x1a] != 1
+        || (result.engine_format != 0x12 && result.engine_format != 0x26)) return false;
+    output = result; return true;
+}
+
 bool tdvr_parse_temporal_target(const void* bytes, size_t size, TdvrTemporalTargetLayout& output) {
     if (!bytes || size != 0x38) return false;
     const auto* p = static_cast<const uint8_t*>(bytes);

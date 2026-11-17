@@ -68,6 +68,30 @@ int main() {
             && !std::memcmp(&parsed,&last,sizeof(parsed)),"invalid target partially replaced parsed layout");
     }
     require(!tdvr_parse_temporal_target(nullptr,56,parsed),"null descriptor accepted");
+    std::array<uint8_t,0x1c> texture{};
+    auto set_word = [&](size_t offset,uint32_t value) { std::memcpy(texture.data()+offset,&value,sizeof(value)); };
+    set_word(4,19); set_word(8,11); set_word(0xc,1); set_word(0x10,1); set_word(0x14,0x12); texture[0x1a] = 1;
+    const auto valid_texture = texture;
+    TdvrTaaTextureLayout taa_layout{};
+    require(tdvr_parse_taa_texture(texture.data(),texture.size(),taa_layout)
+        && taa_layout.width == 19 && taa_layout.height == 11 && taa_layout.engine_format == 0x12,"TAA descriptor fields lost");
+    set_word(0x14,0x26);
+    require(tdvr_parse_taa_texture(texture.data(),texture.size(),taa_layout) && taa_layout.engine_format == 0x26,"second TAA engine format refused");
+    const auto last_taa_layout = taa_layout;
+    for (unsigned scenario = 0; scenario < 9; ++scenario) {
+        texture = valid_texture;
+        switch (scenario) {
+        case 0: texture[0] = 1; break;
+        case 1: set_word(4,0); break;
+        case 2: set_word(8,16385); break;
+        case 3: set_word(0xc,2); break;
+        case 4: set_word(0x10,0); break;
+        case 5: texture[0x1a] = 0; break;
+        case 6: set_word(0x14,0xffffffff); break;
+        }
+        require(!tdvr_parse_taa_texture(scenario == 8 ? nullptr : texture.data(),scenario == 7 ? 27 : texture.size(),taa_layout)
+            && !std::memcmp(&taa_layout,&last_taa_layout,sizeof(taa_layout)),"unsupported TAA descriptor altered output");
+    }
     require(memory.regions == untouched && memory.opaque_resource_reads == 0,"observer modified memory or dereferenced opaque TAA resources");
     memory.put<uint64_t>(0x10000,fields[0],0x30100); memory.put<uint64_t>(0x10000,fields[1],0x30000);
     memory.regions[0x30200][55] ^= 0xff;

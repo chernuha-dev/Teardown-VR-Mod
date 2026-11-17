@@ -310,6 +310,17 @@ CPU previous state, reset/initialization и stereo passes остаются сл�
 частями. Build-Native.ps1 build/native, CTest 20/20 и Python 21/21 прошли;
 финальный engine gate/CTest build/native-trace также прошли. API — BUILD.md.
 
+DEV-004/VR-102: через audited engine texture factory созданы пять собственных
+TAA textures на глаз, отдельно от двадцати framebuffer targets. Descriptor parser,
+GetDesc/device/budget gates и canonical identities; source TAA object, descriptors
+и scene/history state остаются неизменными. Проверка в development-игре:
+10 created, 0 failure, distinct=1; исходные 3440×1440, formats 26/54, flags=4,
+single mip/layer/sample сохранены. TAA estimate 163.5 MiB, вместе с framebuffer
+banks 486 MiB. Повторный request отвергнут. Build-Native.ps1 build/native,
+CTest 20/20, Python 21/21 прошли; полный runtime allocation подтверждён через API.
+CPU previous state, first-frame reset/initialization и применение banks внутри
+eye render passes ещё не реализованы. XR submit пока flat quad; VR-102 открыта.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

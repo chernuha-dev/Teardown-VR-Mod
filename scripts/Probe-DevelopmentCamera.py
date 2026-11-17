@@ -69,6 +69,12 @@ class EyeHistoryProbeStats(c.Structure):
         ("targets",(EngineTargetStats * 10) * 2)]
 
 
+class EyeTaaProbeStats(c.Structure):
+    _fields_ = [(name,c.c_uint32) for name in ("size","abi","phase","created","failure","distinct_resources")] + [
+        (name,c.c_uint64) for name in ("required_bytes","budget_bytes","usage_bytes")] + [
+        ("textures",(EngineResourceInfo * 5) * 2)]
+
+
 class RenderTrace(c.Structure):
     _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
                 ("commands", c.c_uint64), ("stack_samples", c.c_uint64), ("dropped", c.c_uint64),
@@ -222,11 +228,14 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
                 start_address = check(k.GetProcAddress(local,b"TdvrRequestEyeTargetProbe"),"target probe request")
             if engine_targets == 3:
                 start_address = check(k.GetProcAddress(local,b"TdvrRequestEyeHistoryProbe"),"history allocation request")
+            if engine_targets == 4:
+                start_address = check(k.GetProcAddress(local,b"TdvrRequestEyeTaaProbe"),"TAA allocation request")
             stats_export = b"TdvrGetTargetTrace" if target_trace else (b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else
                             (b"TdvrGetCameraOverrideStats" if override_stats else b"TdvrGetEngineStats")))
             if engine_targets: stats_export = b"TdvrGetEngineTargetStats"
             if engine_targets == 2: stats_export = b"TdvrGetEyeTargetProbeStats"
             if engine_targets == 3: stats_export = b"TdvrGetEyeHistoryProbeStats"
+            if engine_targets == 4: stats_export = b"TdvrGetEyeTaaProbeStats"
             stats_address = start_address if control else check(k.GetProcAddress(local, stats_export), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
             if camera_test is not None:
@@ -276,6 +285,7 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
         if engine_targets: kind = EngineTargetStats
         if engine_targets == 2: kind = EyeTargetProbeStats
         if engine_targets == 3: kind = EyeHistoryProbeStats
+        if engine_targets == 4: kind = EyeTaaProbeStats
         stats = read_stats(stats_offset, kind)
         if camera_test is not None:
             request = TrackedCameraRequest() if camera_test.get("tracked") else CameraRequest()
@@ -311,6 +321,12 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
                     sample.fov = Fov(*fov)
             exchange(submit_offset, request, readback=False)
             stats = read_stats(override_offset, CameraOverrideStats)
+        if engine_targets == 4:
+            return {"schema_version":1,"runtime_started":False,"observational_only":not load,
+                    **{name:getattr(stats,name) for name in ("phase","created","failure","distinct_resources",
+                                                          "required_bytes","budget_bytes","usage_bytes")},
+                    "textures":[[{name:getattr(v,name) for name in ("width","height","format","flags","samples","mips","layers")}
+                                 for v in bank] for bank in stats.textures]}
         if engine_targets == 3:
             return {"schema_version":1,"runtime_started":False,"observational_only":not load,
                     **{name:getattr(stats,name) for name in ("phase","created","failure","distinct_resources",
@@ -366,6 +382,7 @@ def main():
     parser.add_argument("--engine-targets", action="store_true", help="Read verified D3D12 resource metadata for the world-render output")
     parser.add_argument("--create-eye-targets", action="store_true", help="One render-thread allocation probe of two 64x64 engine targets; requires an attached engine probe")
     parser.add_argument("--allocate-eye-histories", action="store_true", help="Clone all ten engine framebuffer targets for each eye once; requires available GPU budget")
+    parser.add_argument("--allocate-eye-taa", action="store_true", help="Clone the five TAA textures for each eye; requires completed framebuffer banks")
     parser.add_argument("--reset-trace", action="store_true", help="Rearm the capture trace window for the current scene")
     parser.add_argument("--camera-test", type=float, nargs=3, metavar=("X", "Y", "Z"), help="Apply a synthetic eye offset in metres for <=10 seconds, only in development")
     parser.add_argument("--test-yaw", type=float, default=0, help="Synthetic local yaw in degrees")
@@ -382,6 +399,9 @@ def main():
         if args.allocate_eye_histories:
             if args.engine_targets: raise ValueError("Select one engine target diagnostic")
             args.engine_targets = 3
+        if args.allocate_eye_taa:
+            if args.engine_targets: raise ValueError("Select one engine target diagnostic")
+            args.engine_targets = 4
         if args.target_trace and args.render_trace:
             raise ValueError("Select target trace or recording trace")
         args.render_trace = args.render_trace or args.target_trace
