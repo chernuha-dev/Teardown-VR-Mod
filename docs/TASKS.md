@@ -341,6 +341,17 @@ Build-Native.ps1 build/native-trace, CTest 21/21, Python 23/23 прошли.
 визуальная правильность не проверены. Общий TAA upload buffer +0x20 требует
 проверки GPU ordering до заявления полной изоляции двух проходов. VR-102 открыта.
 
+DEV-004/VR-102: audited TAA upload hook проверяет main/upload command-list
+identity и CPU payload до/после реального вызова, не меняя engine/GPU commands.
+В игре 23920/23920 same_list и preserved payload, 0 rejects/thread changes,
+включая 120 uploads внутри owned-history test. Pinned code показывает staging
+memcpy + CopyBufferRegion, не прямое overwrite исходной CPU-памяти. Также
+созданы два отдельных full-size output framebuffer targets 3440×1440 RGBA8;
+они ещё не рисуются. Budget/metadata/canonical identity gates и process lifetime.
+Build-Native.ps1 build/native и CTest 21/21, Python 23/23; final engine gate
+прошёл. Следующие части: paired world passes, resource-state handoff и XR
+projection submit; single-pass observations их ещё не доказывают.
+
 ## P1 — правильная картинка и трекинг
 
 Зависит от доступа к нативному рендеру (DEV-003/004).

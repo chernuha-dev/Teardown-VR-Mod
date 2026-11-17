@@ -876,3 +876,53 @@ Build-Native.ps1 build/native-trace, CTest 21/21, Python 23/23 прошли.
 Правый eye pass, stereo submit, визуальная правильность картинки и comfort
 в этом срезе не проверялись. Source TAA+0x20 upload-buffer wrapper остаётся общим:
 полный ordering его GPU updates для двух проходов ещё нужно подтвердить.
+
+### TAA upload command-list observer and full-size outputs
+
+Проверен staging path общего TAA upload buffer: renderer+0x10d8 использовал
+entry 0x5a0280; функция копирует CPU bytes в mapped staging range (0x5a05a6)
+и записывает CopyBufferRegion (0x5a05d5). Альтернативный stream renderer+0xfc0
+использует 0x5a0060 с аналогичным memcpy/copy path. Это вывод из pinned code,
+не source declaration и не доказательство всей GPU-синхронизации.
+
+Новый observational hook buffer upload 0x5ac840 требует EXE hash/runtime prefix
+вместе с прежними camera/world guards. Все аргументы всегда передаются исходной
+функции ровно один раз; без stats lock через engine code. Наблюдаются только
+вызовы из TAA frame return RVA 0xa40cd (size 32, offset/flags 0). До/после
+upload проверяются main command list renderer+0xe40 и upload list +0x10f0,
+неизменность 32 CPU bytes и поток; raw pointers не публикуются. Payload hash —
+fingerprint, не доказательство GPU readback или non-overlap staging ranges.
+
+```powershell
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native/Release/tdvr_engine_probe.dll --taa-upload-stats
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native/Release/tdvr_engine_probe.dll --allocate-eye-outputs
+python scripts/Probe-DevelopmentCamera.py --pid <PID> --dll build/native/Release/tdvr_engine_probe.dll --allocate-eye-outputs --stats-only
+```
+
+--taa-upload-stats только читает уже подключённый probe и не включает hooks.
+TdvrTaaUploadStats ABI 1 / 96 bytes. valid означает читаемые ожидаемые inputs;
+same_list — равенство main/upload до/после и неизменную identity за вызов.
+different_list/rejected/thread_changes — отдельные counters. owned_scope_uploads
+считает вызовы во время существующего bounded history test. Другие uploads не
+сэмплируются, GPU commands и payload не переписываются.
+
+--allocate-eye-outputs разово создаёт два target объекта исходного размера
+через тот же audited factory path. До allocation — текущий DXGI budget с
+reserve 384 MiB; поддерживается RGBA8/BGRA8 UNORM. Все descriptor bytes/GetDesc
+сохраняются; canonical identities исключают alias с исходным output и между
+глазами. Объекты удерживаются до process exit. Stats используют прежний ABI
+TdvrEyeTargetProbeStats (776 bytes); failure 7/8 — budget API/insufficient budget.
+Маленькая --create-eye-targets allocator smoke test по-прежнему отдельная.
+
+Runtime 2026-11-17: TAA 23920 calls/valid/same_list/payload_preserved,
+0 different_list/rejected/thread changes; 120 из этих uploads прошли внутри
+owned history test (120 applied/restored, 0 rejected). Созданы оба независимых
+output targets 3440×1440, RGBA8 UNORM (28), flags=1, samples=1. XR panel
+23932/23932, XR/GPU=0, quarantine=0. Build-Native.ps1 build/native: CTest 21/21;
+final engine build/gate также прошёл. Python 23/23.
+
+Это наблюдение текущего single-pass path и allocation будущих output images.
+Оба outputs ещё не рисовались и не передавались в OpenXR. Парные проходы,
+их command ordering, pixel correctness, simulation freeze и comfort пока не
+подтверждены. Actual resource states outputs для будущей GPU copy тоже должны
+быть установлены наблюдением, а не угаданы из wrapper flags.

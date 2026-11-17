@@ -66,6 +66,13 @@ struct TdvrHistoryScopeStats {
     uint32_t taa_counter[2], initialized_mask, flags; // 1 reset pending, 2 in flight, 4 armed
 };
 static_assert(sizeof(TdvrHistoryScopeStats) == 80);
+struct TdvrTaaUploadStats {
+    uint32_t size, abi;
+    uint64_t calls, valid, same_list, different_list, payload_preserved, rejected;
+    uint64_t last_world_call, last_payload_hash, owned_scope_uploads;
+    uint32_t first_thread, thread_changes, signature_matched, hook_installed;
+};
+static_assert(sizeof(TdvrTaaUploadStats) == 96);
 extern "C" {
 TDVR_ENGINE_API HRESULT WINAPI TdvrStartEngineProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats);
@@ -76,6 +83,9 @@ TDVR_ENGINE_API HRESULT WINAPI TdvrGetTemporalStats(TdvrTemporalStats* stats);
 // Never installed into scene slots or rendered; retained until process exit.
 TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeTargetProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeTargetProbeStats(TdvrEyeTargetProbeStats* stats);
+// Full-size independent output targets for the upcoming paired world renderer.
+TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeOutputProbe(void* unused);
+TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeOutputProbeStats(TdvrEyeTargetProbeStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeHistoryProbe(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeHistoryProbeStats(TdvrEyeHistoryProbeStats* stats);
 TDVR_ENGINE_API HRESULT WINAPI TdvrRequestEyeTaaProbe(void* unused);
@@ -84,6 +94,7 @@ TDVR_ENGINE_API HRESULT WINAPI TdvrGetEyeTaaProbeStats(TdvrEyeTaaProbeStats* sta
 TDVR_ENGINE_API HRESULT WINAPI TdvrRequestHistoryScopeTest(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrCancelHistoryScopeTest(void* unused);
 TDVR_ENGINE_API HRESULT WINAPI TdvrGetHistoryScopeStats(TdvrHistoryScopeStats* stats);
+TDVR_ENGINE_API HRESULT WINAPI TdvrGetTaaUploadStats(TdvrTaaUploadStats* stats);
 // Development-only, bounded synthetic camera input. Zero render_calls cancels.
 // Requires a valid audited main-camera observation first. No simulation replay.
 TDVR_ENGINE_API HRESULT WINAPI TdvrSubmitCameraOverride(const TdvrCameraOverrideRequest* request);

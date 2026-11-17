@@ -20,11 +20,19 @@ int main() {
     targets.size = sizeof(targets); targets.abi = 1;
     if (FAILED(TdvrGetEngineTargetStats(&targets)) || targets.samples || targets.known_mask || targets.count) return 1;
     TdvrTemporalStats temporal{};
+    TdvrTaaUploadStats uploads{};
+    if (TdvrGetTaaUploadStats(nullptr) != E_INVALIDARG || TdvrGetTaaUploadStats(&uploads) != E_INVALIDARG) return 1;
+    uploads.size = sizeof(uploads); uploads.abi = 1;
+    if (FAILED(TdvrGetTaaUploadStats(&uploads)) || uploads.calls || uploads.signature_matched || uploads.hook_installed) return 1;
     TdvrEyeTargetProbeStats eye_targets{};
     if (TdvrRequestEyeTargetProbe(nullptr) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
         || TdvrGetEyeTargetProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeTargetProbeStats(&eye_targets) != E_INVALIDARG) return 1;
     eye_targets.size = sizeof(eye_targets); eye_targets.abi = 1;
     if (FAILED(TdvrGetEyeTargetProbeStats(&eye_targets)) || eye_targets.phase || eye_targets.created) return 1;
+    TdvrEyeTargetProbeStats invalid_outputs{};
+    if (TdvrRequestEyeOutputProbe(nullptr) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
+        || TdvrGetEyeOutputProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeOutputProbeStats(&invalid_outputs) != E_INVALIDARG) return 1;
+    if (FAILED(TdvrGetEyeOutputProbeStats(&eye_targets)) || eye_targets.phase || eye_targets.created) return 1;
     TdvrEyeHistoryProbeStats histories{};
     if (TdvrRequestEyeHistoryProbe(nullptr) != HRESULT_FROM_WIN32(ERROR_INVALID_STATE)
         || TdvrGetEyeHistoryProbeStats(nullptr) != E_INVALIDARG || TdvrGetEyeHistoryProbeStats(&histories) != E_INVALIDARG) return 1;

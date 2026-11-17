@@ -16,6 +16,7 @@
 #include <dxgi1_4.h>
 #include <set>
 #include <limits>
+#include <intrin.h>
 #include <wrl/client.h>
 
 namespace {
@@ -32,6 +33,7 @@ constexpr std::array<unsigned char, 32> observed_hash{{
 using SetCamera = void (*)(void*, const float*, const float*);
 using WorldRender = void (*)(void*, void*, void*, void*);
 using BeginXrWorld = HRESULT (WINAPI*)(TdvrXrViewSnapshot*);
+using UploadBuffer = void (*)(void*,void*,const void*,uint32_t,uint32_t,uint32_t);
 struct State {
     std::mutex mutex;
     std::atomic<uint64_t> calls{0};
@@ -39,12 +41,17 @@ struct State {
     SetCamera original = nullptr;
     WorldRender world_original = nullptr;
     BeginXrWorld begin_xr_world = nullptr; // immutable before hooks are enabled
+    UploadBuffer upload_original = nullptr;
+    uintptr_t image_base = 0;
+    TdvrTaaUploadStats upload_stats{sizeof(TdvrTaaUploadStats),1};
     std::atomic<uint64_t> world_calls{0}, world_completed{0};
     TdvrWorldRenderStats world_stats{sizeof(TdvrWorldRenderStats), 1};
     TdvrEngineTargetStats target_stats{sizeof(TdvrEngineTargetStats), 1};
     TdvrTemporalStats temporal_stats{sizeof(TdvrTemporalStats), 1};
     TdvrEyeTargetProbeStats eye_target_stats{sizeof(TdvrEyeTargetProbeStats),1};
     void* retained_eye_targets[2]{}; // bounded diagnostic ownership; no guessed destructor
+    TdvrEyeTargetProbeStats eye_output_stats{sizeof(TdvrEyeTargetProbeStats),1};
+    void* retained_eye_outputs[2]{};
     TdvrEyeHistoryProbeStats eye_history_stats{sizeof(TdvrEyeHistoryProbeStats),1};
     void* retained_eye_histories[2][10]{};
     TdvrEyeTaaProbeStats eye_taa_stats{sizeof(TdvrEyeTaaProbeStats),1};
@@ -168,6 +175,40 @@ void observe(void* object, const float* position, const float* orientation) noex
         s.stats.maximum_view_error = error;
     } catch (...) { ++s.stats.rejected_samples; }
 }
+void upload_buffer(void* renderer,void* buffer,const void* data,uint32_t size,uint32_t offset,uint32_t flags) {
+    auto& s = state();
+    // Only the pinned TAA frame caller; unrelated uploads remain a direct pass.
+    if (reinterpret_cast<uintptr_t>(_ReturnAddress()) != s.image_base+0xa40cd) {
+        s.upload_original(renderer,buffer,data,size,offset,flags); return;
+    }
+    uintptr_t main_before = 0, upload_before = 0, main_after = 0, upload_after = 0;
+    std::array<uint8_t,32> before{},after{};
+    const bool readable_before = size == 32 && offset == 0 && flags == 0 && data
+        && read(data,before.data(),before.size())
+        && read(static_cast<char*>(renderer)+0xe40,&main_before,sizeof(main_before))
+        && read(static_cast<char*>(renderer)+0x10f0,&upload_before,sizeof(upload_before)) && main_before && upload_before;
+    s.upload_original(renderer,buffer,data,size,offset,flags);
+    const bool readable_after = readable_before && read(data,after.data(),after.size())
+        && read(static_cast<char*>(renderer)+0xe40,&main_after,sizeof(main_after))
+        && read(static_cast<char*>(renderer)+0x10f0,&upload_after,sizeof(upload_after)) && main_after && upload_after;
+    std::lock_guard<std::mutex> lock(s.mutex);
+    auto& report = s.upload_stats;
+    ++report.calls;
+    if (s.history_rendering) ++report.owned_scope_uploads;
+    report.last_world_call = s.world_calls.load(std::memory_order_relaxed);
+    const auto thread = GetCurrentThreadId();
+    if (!report.first_thread) report.first_thread = thread;
+    else if (report.first_thread != thread) ++report.thread_changes;
+    if (!readable_after) { ++report.rejected; return; }
+    ++report.valid;
+    if (main_before == upload_before && main_after == upload_after && main_before == main_after) ++report.same_list;
+    else ++report.different_list;
+    if (before == after) ++report.payload_preserved;
+    else ++report.rejected;
+    uint64_t hash = 14695981039346656037ull;
+    for (const auto value : before) { hash ^= value; hash *= 1099511628211ull; }
+    report.last_payload_hash = hash;
+}
 void camera(void* object, const float* position, const float* orientation) {
     // Observational first slice: all original arguments and rendering behavior stay
     // with the engine. Read its completed view matrix only AFTER the original call.
@@ -226,14 +267,20 @@ TdvrEngineTargetStats observe_target(void* target, uintptr_t game) {
     }
     return result;
 }
-void probe_eye_targets(void* scene, void* target, uintptr_t game) {
+bool allocation_budget(ID3D12Device* device,uint64_t required,uint64_t& budget,uint64_t& usage,uint32_t& failure);
+bool same_resource_description(const D3D12_RESOURCE_DESC& a,const D3D12_RESOURCE_DESC& b);
+void probe_eye_targets(void* scene, void* target, uintptr_t game, bool full = false) {
     auto& s = state();
+    auto& report = full ? s.eye_output_stats : s.eye_target_stats;
+    auto* retained = full ? s.retained_eye_outputs : s.retained_eye_targets;
     {
         std::lock_guard<std::mutex> lock(s.mutex);
-        if (s.eye_target_stats.phase != 1 || GetCurrentThreadId() != s.world_stats.first_thread) return;
-        s.eye_target_stats.phase = 4; // running; never repeat a partial allocation
+        if (report.phase != 1 || GetCurrentThreadId() != s.world_stats.first_thread) return;
+        report.phase = 4; // running; never repeat a partial allocation
     }
     TdvrEyeTargetProbeStats result{sizeof(TdvrEyeTargetProbeStats),1,3};
+    D3D12_RESOURCE_DESC expected_output{};
+    Microsoft::WRL::ComPtr<IUnknown> source_identity,eye_identity[2];
     do {
         uint32_t game_state = 0;
         if (!read(reinterpret_cast<void*>(game+8),&game_state,sizeof(game_state)) || game_state != 6) { result.failure = 1; break; }
@@ -248,34 +295,62 @@ void probe_eye_targets(void* scene, void* target, uintptr_t game) {
         if (!create) {
             result.failure = 3; break;
         }
-        // Preserve all opaque descriptor fields; change only the audited extents.
-        const uint32_t extent = 64;
-        std::memcpy(descriptor.data(),&extent,sizeof(extent));
-        std::memcpy(descriptor.data()+4,&extent,sizeof(extent));
+        if (full) {
+            uintptr_t wrapper = 0;
+            Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+            Microsoft::WRL::ComPtr<ID3D12Device> device;
+            if (read(static_cast<char*>(target)+0x38,&wrapper,sizeof(wrapper))) resource = trusted_resource(wrapper);
+            if (!resource || FAILED(resource->GetDevice(IID_PPV_ARGS(&device)))) { result.failure = 5; break; }
+            const auto desc = resource->GetDesc();
+            expected_output = desc;
+            if (FAILED(resource.As(&source_identity))) { result.failure = 5; break; }
+            if (desc.Format != DXGI_FORMAT_R8G8B8A8_UNORM && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM) { result.failure = 5; break; }
+            const auto info = device->GetResourceAllocationInfo(0,1,&desc);
+            uint64_t budget = 0, usage = 0;
+            if (!info.SizeInBytes || info.SizeInBytes > std::numeric_limits<uint64_t>::max()/2) { result.failure = 5; break; }
+            if (!allocation_budget(device.Get(),info.SizeInBytes*2,budget,usage,result.failure)) break;
+        } else {
+            // The small allocator smoke test changes only the audited extents.
+            const uint32_t extent = 64;
+            std::memcpy(descriptor.data(),&extent,sizeof(extent));
+            std::memcpy(descriptor.data()+4,&extent,sizeof(extent));
+            layout.width = layout.height = extent;
+        }
         bool valid = true;
         for (unsigned eye = 0; eye < 2; ++eye) {
-            s.retained_eye_targets[eye] = create(reinterpret_cast<void*>(renderer),descriptor.data(),
-                eye ? "tdvr-probe-right" : "tdvr-probe-left");
-            if (!s.retained_eye_targets[eye]) { result.failure = 4; valid = false; break; }
+            retained[eye] = create(reinterpret_cast<void*>(renderer),descriptor.data(),full
+                ? (eye ? "tdvr-output-right" : "tdvr-output-left") : (eye ? "tdvr-probe-right" : "tdvr-probe-left"));
+            if (!retained[eye]) { result.failure = 4; valid = false; break; }
             ++result.created;
-            result.eyes[eye] = observe_target(s.retained_eye_targets[eye],game);
+            result.eyes[eye] = observe_target(retained[eye],game);
             const auto& meta = result.eyes[eye];
-            if (meta.width != 64 || meta.height != 64 || meta.count != 1 || meta.known_mask != 1 || meta.matching_extent_mask != 1) {
+            if (meta.width != layout.width || meta.height != layout.height || meta.count != 1 || meta.known_mask != 1 || meta.matching_extent_mask != 1) {
                 result.failure = 5; valid = false; break;
+            }
+            if (full) {
+                uintptr_t wrapper = 0;
+                Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+                if (read(static_cast<char*>(retained[eye])+0x38,&wrapper,sizeof(wrapper))) resource = trusted_resource(wrapper);
+                std::array<uint8_t,0x38> actual{};
+                if (!resource || !same_resource_description(resource->GetDesc(),expected_output)
+                    || !read(retained[eye],actual.data(),actual.size()) || actual != descriptor
+                    || FAILED(resource.As(&eye_identity[eye]))) { result.failure = 5; valid = false; break; }
             }
         }
         if (!valid) break;
         uintptr_t resources[2]{};
         for (unsigned eye = 0; eye < 2; ++eye) {
             uintptr_t wrapper = 0;
-            valid = valid && read(static_cast<char*>(s.retained_eye_targets[eye])+0x38,&wrapper,sizeof(wrapper)) && wrapper
+            valid = valid && read(static_cast<char*>(retained[eye])+0x38,&wrapper,sizeof(wrapper)) && wrapper
                 && read(reinterpret_cast<void*>(wrapper+0x38),&resources[eye],sizeof(resources[eye])) && resources[eye];
         }
-        if (!valid || resources[0] == resources[1] || s.retained_eye_targets[0] == s.retained_eye_targets[1]) { result.failure = 6; break; }
+        if (!valid || resources[0] == resources[1] || retained[0] == retained[1]) { result.failure = 6; break; }
+        if (full && (eye_identity[0].Get() == source_identity.Get() || eye_identity[1].Get() == source_identity.Get()
+            || eye_identity[0].Get() == eye_identity[1].Get())) { result.failure = 6; break; }
         result.distinct_resources = 1; result.phase = 2;
     } while (false);
     std::lock_guard<std::mutex> lock(s.mutex);
-    s.eye_target_stats = result;
+    report = result;
 }
 bool same_resource_description(const D3D12_RESOURCE_DESC& a, const D3D12_RESOURCE_DESC& b) {
     return a.Dimension == b.Dimension && a.Alignment == b.Alignment && a.Width == b.Width && a.Height == b.Height
@@ -693,6 +768,8 @@ void world_render(void* scene, void* target, void* player, void* camera_object) 
     if (valid && main_camera) {
         try { probe_eye_targets(scene,target,game); }
         catch (...) { std::lock_guard<std::mutex> lock(s.mutex); s.eye_target_stats.phase = 3; s.eye_target_stats.failure = 4; }
+        try { probe_eye_targets(scene,target,game,true); }
+        catch (...) { std::lock_guard<std::mutex> lock(s.mutex); s.eye_output_stats.phase = 3; s.eye_output_stats.failure = 4; }
         try { probe_eye_histories(scene,game); }
         catch (...) { std::lock_guard<std::mutex> lock(s.mutex); s.eye_history_stats.phase = 3; s.eye_history_stats.failure = 4; }
         try { probe_eye_taa(scene,game); }
@@ -753,6 +830,7 @@ HRESULT WINAPI TdvrStartEngineProbe(void*) {
         return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     s.stats.identity_matched = 1;
     const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    s.image_base = base;
     auto* target = reinterpret_cast<void*>(base + camera_rva);
     std::array<unsigned char, camera_prefix.size()> bytes{};
     if (!read(target, bytes.data(), bytes.size()) || bytes != camera_prefix)
@@ -763,6 +841,13 @@ HRESULT WINAPI TdvrStartEngineProbe(void*) {
     if (!read(world_target, world_bytes.data(), world_bytes.size()) || world_bytes != world_prefix)
         return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     s.world_stats.signature_matched = 1;
+    constexpr std::array<uint8_t,19> upload_prefix{{0x48,0x89,0x6c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,
+        0x57,0x41,0x56,0x41,0x57,0x48,0x83,0xec,0x30}};
+    auto* upload_target = reinterpret_cast<void*>(base+0x5ac840);
+    std::array<uint8_t,upload_prefix.size()> upload_bytes{};
+    if (!read(upload_target,upload_bytes.data(),upload_bytes.size()) || upload_bytes != upload_prefix)
+        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+    s.upload_stats.signature_matched = 1;
     wchar_t xr_timing[2]{};
     if (GetEnvironmentVariableW(L"TDVR_XR_WORLD_TIMING", xr_timing, 2) == 1 && xr_timing[0] == L'1' && development_process()) {
         const auto capture = GetModuleHandleW(L"tdvr_capture.dll");
@@ -776,10 +861,12 @@ HRESULT WINAPI TdvrStartEngineProbe(void*) {
         MH_Uninitialize(); return E_FAIL;
     }
     if (MH_CreateHook(world_target, reinterpret_cast<void*>(world_render), reinterpret_cast<void**>(&s.world_original)) != MH_OK
-        || MH_QueueEnableHook(target) != MH_OK || MH_QueueEnableHook(world_target) != MH_OK
+        || MH_CreateHook(upload_target,reinterpret_cast<void*>(upload_buffer),reinterpret_cast<void**>(&s.upload_original)) != MH_OK
+        || MH_QueueEnableHook(target) != MH_OK || MH_QueueEnableHook(world_target) != MH_OK || MH_QueueEnableHook(upload_target) != MH_OK
         || MH_ApplyQueued() != MH_OK) { MH_Uninitialize(); return E_FAIL; }
     s.stats.hook_installed = 1;
     s.world_stats.hook_installed = 1;
+    s.upload_stats.hook_installed = 1;
     return S_OK;
 }
 HRESULT WINAPI TdvrGetEngineStats(TdvrEngineStats* stats) {
@@ -807,6 +894,10 @@ HRESULT WINAPI TdvrGetTemporalStats(TdvrTemporalStats* stats) {
     if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.temporal_stats; return S_OK;
 }
+HRESULT WINAPI TdvrGetTaaUploadStats(TdvrTaaUploadStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.upload_stats; return S_OK;
+}
 HRESULT WINAPI TdvrRequestEyeTargetProbe(void*) {
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);
     if (!s.world_stats.hook_installed || !s.world_stats.main_camera_matches || !development_process())
@@ -817,6 +908,17 @@ HRESULT WINAPI TdvrRequestEyeTargetProbe(void*) {
 HRESULT WINAPI TdvrGetEyeTargetProbeStats(TdvrEyeTargetProbeStats* stats) {
     if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.eye_target_stats; return S_OK;
+}
+HRESULT WINAPI TdvrRequestEyeOutputProbe(void*) {
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);
+    if (!s.world_stats.hook_installed || !s.world_stats.main_camera_matches || !development_process())
+        return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+    if (s.eye_output_stats.phase) return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
+    s.eye_output_stats.phase = 1; return S_OK;
+}
+HRESULT WINAPI TdvrGetEyeOutputProbeStats(TdvrEyeTargetProbeStats* stats) {
+    if (!stats || stats->size != sizeof(*stats) || stats->abi != 1) return E_INVALIDARG;
+    auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex); *stats = s.eye_output_stats; return S_OK;
 }
 HRESULT WINAPI TdvrRequestEyeHistoryProbe(void*) {
     auto& s = state(); std::lock_guard<std::mutex> lock(s.mutex);

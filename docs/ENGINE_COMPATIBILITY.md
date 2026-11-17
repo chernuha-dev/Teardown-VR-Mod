@@ -244,3 +244,14 @@ reset исходных histories. Это не replay двух глаз и не v
 Последняя записывает upload command в stream через virtual call. Семантика
 копирования payload/order этого stream ещё не доказана для двух последовательных
 world renders; общий upload buffer не объявляется изолированным per-eye.
+
+Runtime-read выбранного renderer уточнил virtual entry stream+0:
+renderer+0x10d8 → 0x5a0280, renderer+0xfc0 → 0x5a0060. Pinned code первого
+копирует bytes в staging mapped range и вызывает command-list CopyBufferRegion;
+прямой CPU overwrite GPU destination из исходного TAA stack buffer не найден.
+Observational upload hook на 0x5ac840 измерил 23920 TAA calls с одинаковыми
+main/upload list до/после, неизменными CPU bytes и одним потоком; 120 из них
+в owned-history test. Это single-pass evidence, не replay correctness proof.
+Дополнительно созданы два full-size output framebuffer targets 3440×1440,
+RGBA8 UNORM, независимые от исходного output и друг от друга; render/submit
+в них пока не выполнялся. GPU state handoff для копирования ещё не установлен.

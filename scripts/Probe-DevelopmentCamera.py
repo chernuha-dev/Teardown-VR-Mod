@@ -82,6 +82,13 @@ class HistoryScopeStats(c.Structure):
         ("taa_counter",c.c_uint32 * 2),("initialized_mask",c.c_uint32),("flags",c.c_uint32)]
 
 
+class TaaUploadStats(c.Structure):
+    _fields_ = [("size",c.c_uint32),("abi",c.c_uint32)] + [
+        (name,c.c_uint64) for name in ("calls","valid","same_list","different_list","payload_preserved","rejected",
+                                     "last_world_call","last_payload_hash","owned_scope_uploads")] + [
+        (name,c.c_uint32) for name in ("first_thread","thread_changes","signature_matched","hook_installed")]
+
+
 class RenderTrace(c.Structure):
     _fields_ = [("size", c.c_uint32), ("abi", c.c_uint32),
                 ("commands", c.c_uint64), ("stack_samples", c.c_uint64), ("dropped", c.c_uint64),
@@ -239,6 +246,8 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
                 start_address = check(k.GetProcAddress(local,b"TdvrRequestEyeTaaProbe"),"TAA allocation request")
             if engine_targets in (5,6):
                 start_address = check(k.GetProcAddress(local,b"TdvrRequestHistoryScopeTest" if engine_targets == 5 else b"TdvrCancelHistoryScopeTest"),"history scope request")
+            if engine_targets == 8:
+                start_address = check(k.GetProcAddress(local,b"TdvrRequestEyeOutputProbe"),"eye output allocation request")
             stats_export = b"TdvrGetTargetTrace" if target_trace else (b"TdvrGetRenderTrace" if render_trace else (b"TdvrGetWorldRenderStats" if world_render else
                             (b"TdvrGetCameraOverrideStats" if override_stats else b"TdvrGetEngineStats")))
             if engine_targets: stats_export = b"TdvrGetEngineTargetStats"
@@ -246,6 +255,8 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
             if engine_targets == 3: stats_export = b"TdvrGetEyeHistoryProbeStats"
             if engine_targets == 4: stats_export = b"TdvrGetEyeTaaProbeStats"
             if engine_targets in (5,6): stats_export = b"TdvrGetHistoryScopeStats"
+            if engine_targets == 7: stats_export = b"TdvrGetTaaUploadStats"
+            if engine_targets == 8: stats_export = b"TdvrGetEyeOutputProbeStats"
             stats_address = start_address if control else check(k.GetProcAddress(local, stats_export), "stats export")
             start_offset, stats_offset = start_address - local, stats_address - local
             if camera_test is not None:
@@ -293,10 +304,11 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
 
         kind = TargetTrace if target_trace else (RenderTrace if render_trace else (WorldRenderStats if world_render else (CameraOverrideStats if override_stats else EngineStats)))
         if engine_targets: kind = EngineTargetStats
-        if engine_targets == 2: kind = EyeTargetProbeStats
+        if engine_targets in (2,8): kind = EyeTargetProbeStats
         if engine_targets == 3: kind = EyeHistoryProbeStats
         if engine_targets == 4: kind = EyeTaaProbeStats
         if engine_targets in (5,6): kind = HistoryScopeStats
+        if engine_targets == 7: kind = TaaUploadStats
         stats = read_stats(stats_offset, kind)
         if camera_test is not None:
             request = TrackedCameraRequest() if camera_test.get("tracked") else CameraRequest()
@@ -332,6 +344,10 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
                     sample.fov = Fov(*fov)
             exchange(submit_offset, request, readback=False)
             stats = read_stats(override_offset, CameraOverrideStats)
+        if engine_targets == 7:
+            return {"schema_version":1,"runtime_started":False,"observational_only":True,
+                    **{name:getattr(stats,name) for name,_ in stats._fields_ if name not in ("size","abi","last_payload_hash")},
+                    "last_payload_hash":f"{stats.last_payload_hash:016x}"}
         if engine_targets in (5,6):
             return {"schema_version":1,"runtime_started":False,"observational_only":not load,
                     **{name:getattr(stats,name) for name in ("accepted","applied","restored","rejected","remaining","eye","initialized_mask","flags")},
@@ -348,7 +364,7 @@ def probe(pid, dll, load=True, render_trace=False, reset_trace=False, world_rend
                                                           "required_bytes","budget_bytes","usage_bytes")},
                     "targets":[[{"width":v.width,"height":v.height,"count":v.count,"known_mask":v.known_mask,
                                  "formats":[t.format for t in v.colors[:min(v.count,8)]]} for v in bank] for bank in stats.targets]}
-        if engine_targets == 2:
+        if engine_targets in (2,8):
             return {"schema_version":1,"runtime_started":False,"observational_only":not load,
                     **{name:getattr(stats,name) for name in ("phase","created","distinct_resources","failure")},
                     "eyes":[{"width":v.width,"height":v.height,"count":v.count,"known_mask":v.known_mask,
@@ -400,6 +416,8 @@ def main():
     parser.add_argument("--allocate-eye-taa", action="store_true", help="Clone the five TAA textures for each eye; requires completed framebuffer banks")
     parser.add_argument("--history-scope-test", action="store_true", help="Use the owned left-eye histories for <=120 original-camera renders / 3 seconds")
     parser.add_argument("--cancel-history-scope", action="store_true")
+    parser.add_argument("--taa-upload-stats", action="store_true", help="Read only the attached probe's TAA upload/main command-list observations")
+    parser.add_argument("--allocate-eye-outputs", action="store_true", help="Create separate full-size engine output targets for the two upcoming eye passes")
     parser.add_argument("--reset-trace", action="store_true", help="Rearm the capture trace window for the current scene")
     parser.add_argument("--camera-test", type=float, nargs=3, metavar=("X", "Y", "Z"), help="Apply a synthetic eye offset in metres for <=10 seconds, only in development")
     parser.add_argument("--test-yaw", type=float, default=0, help="Synthetic local yaw in degrees")
@@ -422,6 +440,12 @@ def main():
         if args.history_scope_test or args.cancel_history_scope:
             if args.engine_targets or (args.history_scope_test and args.cancel_history_scope): raise ValueError("Select one history diagnostic")
             args.engine_targets = 6 if args.cancel_history_scope else 5
+        if args.taa_upload_stats:
+            if args.engine_targets: raise ValueError("Select one engine diagnostic")
+            args.engine_targets = 7; args.stats_only = True
+        if args.allocate_eye_outputs:
+            if args.engine_targets: raise ValueError("Select one engine diagnostic")
+            args.engine_targets = 8
         if args.target_trace and args.render_trace:
             raise ValueError("Select target trace or recording trace")
         args.render_trace = args.render_trace or args.target_trace
